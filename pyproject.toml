@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "netassess"
+version = "1.0.0"
+description = "Authorized, safe, modular network attack-surface assessment platform"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["security", "assessment", "network", "scanner", "attack-surface"]
+authors = [{ name = "cyberlord246" }]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Security",
+]
+# Core runs on the standard library alone — no required dependencies.
+dependencies = []
+
+[project.optional-dependencies]
+ai = ["anthropic>=0.39"]        # for --mode ai / --ai-provider anthropic
+
+[project.scripts]
+netassess = "netassess.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/OWNER/netassess"
+
+[tool.setuptools.packages.find]
+include = ["netassess*"]
+
+[tool.setuptools.package-data]
+netassess = ["data/*.txt", "README.md"]

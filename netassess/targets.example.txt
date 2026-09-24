@@ -1,0 +1,8 @@
+# netassess targets — ONLY list IPs/CIDRs you are AUTHORIZED to assess.
+# One entry per line. Supports individual IPs and CIDR ranges.
+# Lines beginning with # are ignored.
+
+192.0.2.10
+192.0.2.11
+192.0.2.20
+192.0.2.0/24

@@ -1,0 +1,46 @@
+# --- unrelated reference material that happens to live in this folder ---
+*.pdf
+*.html
+SQLMap*/
+nmap-*.html
+
+# --- python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+
+# --- virtual environments ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- assessment output / state (never commit scan results) ---
+netassess-out/
+*-out/
+*.tmp
+*.tmp.*
+report.md
+report.html
+report.json
+state.json
+diff.md
+diff.json
+
+# keep example/config files though
+!config.example.json
+!targets.example.txt
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# archives
+*.zip

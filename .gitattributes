@@ -1,0 +1,6 @@
+# Normalize line endings: LF in the repo, native in working copy.
+* text=auto eol=lf
+# Shell scripts must stay LF even on Windows checkouts.
+*.sh text eol=lf
+# Treat the wordlist as text.
+netassess/data/common.txt text eol=lf

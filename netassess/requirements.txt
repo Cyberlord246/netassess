@@ -1,0 +1,5 @@
+# netassess runs on the Python 3.10+ standard library alone — no deps required.
+#
+# Optional integrations (enable richer capabilities if installed):
+#   anthropic>=0.39     # --mode ai / --ai-provider anthropic (LLM task ranking)
+#   nmap (system pkg)   # auto-used for service/version detection if on PATH

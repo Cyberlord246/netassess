@@ -1,0 +1,15 @@
+{
+  "targets": ["192.0.2.0/24"],
+  "exclude": ["192.0.2.1"],
+  "mode": "auto",
+  "ports": [22, 80, 443, 445, 3306, 8080],
+  "full_port_scan": false,
+  "service_detection": "banner",
+  "concurrency": 50,
+  "rate": 200.0,
+  "timeout": 3.0,
+  "retries": 1,
+  "forbidden_ports": [],
+  "output_dir": "netassess-out",
+  "ai_provider": "none"
+}

@@ -1,0 +1,388 @@
+"""Report generator.
+
+Produces a comprehensive Markdown report (and a machine-readable JSON export)
+covering every section required by the assessment brief. Findings are grouped by
+validation state so confirmed issues are never conflated with unvalidated hints.
+"""
+from __future__ import annotations
+
+import json
+import os
+from collections import Counter, defaultdict
+
+from .correlation import CorrelationEngine
+from .findings_view import build_view
+from .models import (
+    Finding, HostStatus, SEVERITY_ORDER, Severity, ValidationState,
+)
+from .prioritize import PriorityEngine
+from .scope import ScopeEngine
+from .state import AssetGraph
+
+
+class ReportGenerator:
+    def __init__(self, graph: AssetGraph, scope: ScopeEngine, config):
+        self.graph = graph
+        self.scope = scope
+        self.config = config
+
+    # -- public ----------------------------------------------------------- #
+    def write(self, out_dir: str) -> dict:
+        os.makedirs(out_dir, exist_ok=True)
+        md = self.render_markdown()
+        md_path = os.path.join(out_dir, "report.md")
+        json_path = os.path.join(out_dir, "report.json")
+        with open(md_path, "w", encoding="utf-8") as fh:
+            fh.write(md)
+        with open(json_path, "w", encoding="utf-8") as fh:
+            json.dump(self._json_export(), fh, indent=2)
+        paths = {"markdown": md_path, "json": json_path}
+        if getattr(self.config, "html_report", True):
+            from .report_html import HTMLReport
+            paths["html"] = HTMLReport(self.graph, self.scope, self.config).write(out_dir)
+        return paths
+
+    # -- rendering -------------------------------------------------------- #
+    def render_markdown(self) -> str:
+        g = self.graph
+        s: list[str] = []
+        w = s.append
+
+        view = build_view(
+            g,
+            min_severity=getattr(self.config, "report_min_severity", "medium"),
+            aggregate=getattr(self.config, "report_aggregate", True),
+        )
+        by_val = view.by_validation
+
+        w("# Network Attack-Surface Assessment Report\n")
+        w(self._executive_summary(view))
+
+        # scope note
+        w("\n## Scope & Authorization\n")
+        summ = self.scope.summary()
+        w(f"- **Authorized networks:** {', '.join(summ['included_networks']) or '(none)'}")
+        w(f"- **Excluded networks:** {', '.join(summ['excluded_networks']) or '(none)'}")
+        w(f"- **Forbidden ports:** {summ['forbidden_ports'] or '(none)'}")
+        w(f"- **Authorized operations executed:** {summ['authorized_ops']}")
+        w(f"- **Operations denied by scope engine:** {summ['denied_ops']}")
+        w("- Only explicitly authorized targets were assessed. Hosts observed "
+          "in redirects or DNS were **not** auto-added to scope.\n")
+
+        w(self._attack_surface_summary())
+        w(self._live_hosts())
+        w(self._reverse_dns())
+        w(self._ports_and_services())
+        w(self._service_versions())
+        w(self._http_section())
+        w(self._content_section())
+        w(self._tls_section())
+        w(self._technologies())
+        w(self._correlation())
+        w(self._prioritization())
+
+        # findings by validation state (severity-filtered + aggregated)
+        note = (f"\n_Showing findings at severity **{view.threshold.value}** and "
+                f"above; {view.suppressed} lower-severity/informational finding(s) "
+                "suppressed for signal. Full detail is in report.json._\n"
+                if view.suppressed else "")
+
+        w("\n## Confirmed Findings\n" + note)
+        w(self._render_findings(by_val.get(ValidationState.CONFIRMED, [])))
+
+        w("\n## Potential Security Issues\n")
+        pot = by_val.get(ValidationState.POTENTIAL, []) + \
+            by_val.get(ValidationState.OBSERVED, [])
+        pot.sort(key=lambda a: SEVERITY_ORDER[a.severity], reverse=True)
+        w(self._render_findings(pot))
+
+        w("\n## Unvalidated Findings\n")
+        w(self._render_findings(by_val.get(ValidationState.NEEDS_VALIDATION, [])))
+
+        w("\n## False Positives\n")
+        fp = by_val.get(ValidationState.FALSE_POSITIVE, [])
+        w(self._render_findings(fp) if fp else "_None recorded._\n")
+
+        w(self._assessment_gaps())
+        w(self._next_steps())
+        return "\n".join(s) + "\n"
+
+    # -- sections --------------------------------------------------------- #
+    def _executive_summary(self, view) -> str:
+        g = self.graph
+        sc = view.severity_counts
+        live = len(g.live_hosts())
+        open_ports = sum(len(h.open_ports()) for h in g.hosts.values())
+        http = len(g.all_http_services())
+        lines = [
+            "\n## Executive Summary\n",
+            f"- **Hosts assessed:** {len(g.hosts)}  "
+            f"(**live:** {live})",
+            f"- **Open ports discovered:** {open_ports}",
+            f"- **HTTP/HTTPS services:** {http}",
+            f"- **Reported findings:** {view.kept} "
+            f"(severity ≥ {view.threshold.value}; {view.suppressed} lower "
+            f"suppressed)",
+            f"  - Critical: {sc.get('critical',0)} · "
+            f"High: {sc.get('high',0)} · "
+            f"Medium: {sc.get('medium',0)} · "
+            f"Low: {sc.get('low',0)} · "
+            f"Info: {sc.get('info',0)}",
+            "\nThis report inventories the externally reachable attack surface of "
+            "the authorized targets and highlights safe, non-destructively "
+            "detected security issues. Version-derived issues are marked for "
+            "validation and should be confirmed before remediation prioritisation.",
+        ]
+        return "\n".join(lines)
+
+    def _attack_surface_summary(self) -> str:
+        g = self.graph
+        svc_counter = Counter()
+        for _h, p in g.iter_open_ports():
+            svc_counter[p.service.name] += 1
+        lines = ["\n## Attack Surface Summary\n",
+                 "| Service | Instances |", "|---|---|"]
+        for name, n in svc_counter.most_common():
+            lines.append(f"| {name} | {n} |")
+        if len(lines) == 3:
+            lines.append("| _(none)_ | 0 |")
+        return "\n".join(lines)
+
+    def _live_hosts(self) -> str:
+        lines = ["\n## Live Hosts\n", "| IP | Status | Method | Latency (ms) |",
+                 "|---|---|---|---|"]
+        for ip in sorted(self.graph.hosts):
+            h = self.graph.hosts[ip]
+            lines.append(f"| {h.ip} | {h.status.value} | {h.discovery_method} | "
+                         f"{h.latency_ms if h.latency_ms is not None else '-'} |")
+        return "\n".join(lines)
+
+    def _reverse_dns(self) -> str:
+        lines = ["\n## Reverse DNS\n", "| IP | Hostnames |", "|---|---|"]
+        any_row = False
+        for ip in sorted(self.graph.hosts):
+            h = self.graph.hosts[ip]
+            if h.hostnames:
+                any_row = True
+                lines.append(f"| {h.ip} | {', '.join(h.hostnames)} |")
+        if not any_row:
+            lines.append("| _(no PTR records resolved)_ | - |")
+        lines.append("\n_Hostnames are evidence only and do not prove ownership._")
+        return "\n".join(lines)
+
+    def _ports_and_services(self) -> str:
+        lines = ["\n## Open Ports & Services\n"]
+        for ip in sorted(self.graph.hosts):
+            h = self.graph.hosts[ip]
+            ports = h.open_ports()
+            if not ports:
+                continue
+            lines.append(f"\n### {h.ip}"
+                         + (f" ({h.hostnames[0]})" if h.hostnames else ""))
+            for p in ports:
+                svc = p.service
+                extra = f" — {svc.product} {svc.version}".rstrip() if svc.product else ""
+                lines.append(f"- `{p.number}/{p.protocol}` → **{svc.name}**"
+                             f"{extra}  _(confidence: {svc.confidence.value})_")
+        if len(lines) == 1:
+            lines.append("_No open ports discovered._")
+        return "\n".join(lines)
+
+    def _service_versions(self) -> str:
+        lines = ["\n## Service Versions\n",
+                 "| Asset | Service | Product | Version | Confidence | Evidence |",
+                 "|---|---|---|---|---|---|"]
+        rows = 0
+        for h, p in self.graph.iter_open_ports():
+            svc = p.service
+            if svc.product or svc.version:
+                rows += 1
+                lines.append(f"| {h.ip}:{p.number} | {svc.name} | {svc.product} | "
+                             f"{svc.version} | {svc.confidence.value} | {svc.evidence or svc.banner[:40]} |")
+        if not rows:
+            lines.append("| _(no version data collected)_ | | | | | |")
+        return "\n".join(lines)
+
+    def _http_section(self) -> str:
+        lines = ["\n## HTTP / HTTPS Services\n"]
+        services = self.graph.all_http_services()
+        if not services:
+            lines.append("_No HTTP/HTTPS services identified._")
+            return "\n".join(lines)
+        for h, svc in services:
+            lines.append(f"\n### {svc.url}")
+            lines.append(f"- **IP/Port:** {svc.ip}:{svc.port} ({svc.scheme})")
+            lines.append(f"- **Status:** {svc.status}")
+            lines.append(f"- **Title:** {svc.title or '-'}")
+            lines.append(f"- **Server:** {svc.server or '-'}")
+            lines.append(f"- **Content-Type:** {svc.content_type or '-'}")
+            lines.append(f"- **Content-Length:** {svc.content_length}")
+            if svc.redirect_chain:
+                lines.append(f"- **Redirects:** {' | '.join(svc.redirect_chain)}")
+            missing = [k for k, v in svc.security_headers.items() if not v]
+            lines.append(f"- **Missing security headers:** "
+                         f"{', '.join(missing) if missing else 'none'}")
+            if svc.technologies:
+                techs = ", ".join(
+                    f"{t.name}{('/' + t.version) if t.version else ''} "
+                    f"({t.confidence.value})" for t in svc.technologies)
+                lines.append(f"- **Technologies:** {techs}")
+            lines.append(f"- **Response time:** {svc.response_ms} ms")
+        return "\n".join(lines)
+
+    def _content_section(self) -> str:
+        services = [(h, s) for h, s in self.graph.all_http_services()
+                    if s.discovered_paths]
+        if not services:
+            return ""
+        lines = ["\n## Discovered Web Content\n",
+                 "Paths found via GET-only content discovery (all severities; "
+                 "sensitive ones also appear under Findings).\n"]
+        for _h, s in services:
+            lines.append(f"\n### {s.url}")
+            lines.append("| Path | Status | Category |")
+            lines.append("|---|---|---|")
+            for p in sorted(s.discovered_paths, key=lambda x: x["path"]):
+                lines.append(f"| `{p['path']}` | {p['status']} | {p['category']} |")
+        return "\n".join(lines)
+
+    def _tls_section(self) -> str:
+        lines = ["\n## TLS Information\n"]
+        any_tls = False
+        for ip in sorted(self.graph.hosts):
+            h = self.graph.hosts[ip]
+            for port, tls in sorted(h.tls.items()):
+                any_tls = True
+                lines.append(f"\n### {h.ip}:{port}")
+                lines.append(f"- **Subject:** {tls.subject or '-'}")
+                lines.append(f"- **Issuer:** {tls.issuer or '-'}")
+                lines.append(f"- **SANs:** {', '.join(tls.sans) or '-'}")
+                lines.append(f"- **Valid until:** {tls.not_after or '-'}"
+                             + (f" ({tls.days_to_expiry} days)"
+                                if tls.days_to_expiry is not None else ""))
+                lines.append(f"- **Negotiated:** {tls.negotiated_protocol} "
+                             f"{tls.negotiated_cipher}")
+                if tls.protocols_offered:
+                    lines.append(f"- **Protocols offered:** {', '.join(tls.protocols_offered)}")
+                if tls.problems:
+                    lines.append(f"- **Problems:** {'; '.join(tls.problems)}")
+        if not any_tls:
+            lines.append("_No TLS endpoints analysed._")
+        return "\n".join(lines)
+
+    def _technologies(self) -> str:
+        counter = Counter()
+        for _h, svc in self.graph.all_http_services():
+            for t in svc.technologies:
+                label = f"{t.name}{('/' + t.version) if t.version else ''}"
+                counter[label] += 1
+        lines = ["\n## Technologies\n", "| Technology | Instances |", "|---|---|"]
+        for name, n in counter.most_common():
+            lines.append(f"| {name} | {n} |")
+        if len(lines) == 3:
+            lines.append("| _(none identified)_ | 0 |")
+        return "\n".join(lines)
+
+    def _correlation(self) -> str:
+        lines = ["\n## Correlation (IP → Service → Version → Tech → Findings)\n"]
+        chains = CorrelationEngine().correlate(self.graph)
+        if not chains:
+            lines.append("_Nothing to correlate._")
+            return "\n".join(lines)
+        for c in chains:
+            lines.append(f"- `{c.chain()}`"
+                         + (f"  → findings: {', '.join(c.findings)}"
+                            if c.findings else ""))
+        return "\n".join(lines)
+
+    def _prioritization(self) -> str:
+        lines = ["\n## Prioritized Attack Surfaces\n",
+                 "Ranked by evidence-weighted score. Presence alone is never "
+                 "rated critical.\n",
+                 "| Rank | Asset | Score | Top severity | Why |",
+                 "|---|---|---|---|---|"]
+        items = PriorityEngine().prioritize(self.graph)
+        for i, item in enumerate(items[:25], 1):
+            lines.append(f"| {i} | {item.asset} | {item.score} | "
+                         f"{item.top_severity} | {'; '.join(item.reasons)} |")
+        if not items:
+            lines.append("| - | _(none)_ | - | - | - |")
+        return "\n".join(lines)
+
+    def _render_findings(self, aggs) -> str:
+        if not aggs:
+            return "_None._\n"
+        aggs = sorted(aggs, key=lambda a: (SEVERITY_ORDER[a.severity], a.count),
+                      reverse=True)
+        out = []
+        for a in aggs:
+            suffix = f" (×{a.count} hosts)" if a.count > 1 else ""
+            out.append(f"\n### {a.title}{suffix}")
+            out.append(f"- **Severity:** {a.severity.value}  |  "
+                       f"**Confidence:** {a.confidence.value}  |  "
+                       f"**Validation:** {a.validation.value}")
+            out.append(f"- **Category:** {a.category}  |  "
+                       f"**Detection source:** {a.source}")
+            out.append(f"- **Affected assets ({a.count}):** "
+                       + ", ".join(f"`{x}`" for x in a.assets))
+            # show a couple of representative evidence samples
+            samples = [f"{asset}: {ev}" for asset, ev in
+                       list(a.evidence_by_asset.items())[:3] if ev]
+            if samples:
+                out.append(f"- **Evidence:** " + " | ".join(samples)
+                           + (" …" if a.count > 3 else ""))
+            out.append(f"- **Description:** {a.description or '-'}")
+            out.append(f"- **Why it matters:** {a.why_it_matters or '-'}")
+            out.append(f"- **Potential impact:** {a.impact or '-'}")
+            out.append(f"- **Recommended remediation:** {a.remediation or '-'}")
+        return "\n".join(out) + "\n"
+
+    def _assessment_gaps(self) -> str:
+        gaps = []
+        unresp = [h.ip for h in self.graph.hosts.values()
+                  if h.status in (HostStatus.UNRESPONSIVE, HostStatus.FILTERED)]
+        if unresp:
+            gaps.append(f"- {len(unresp)} host(s) unresponsive/filtered — may be "
+                        "firewalled rather than offline: "
+                        f"{', '.join(unresp[:10])}"
+                        + (" …" if len(unresp) > 10 else ""))
+        if not self.config.full_port_scan:
+            gaps.append("- Only a curated port set was scanned; services on other "
+                        "ports were not assessed (use `--full-port-scan` to widen).")
+        if self.config.service_detection == "off":
+            gaps.append("- Service/version detection was disabled.")
+        gaps.append("- Deep credentialed checks, exploitation, and destructive "
+                    "tests were intentionally NOT performed (safe assessment).")
+        denied = self.scope.denied_decisions()
+        if denied:
+            gaps.append(f"- {len(denied)} operation(s) were blocked by the scope "
+                        "engine and therefore not assessed.")
+        return "\n## Assessment Gaps\n\n" + "\n".join(gaps)
+
+    def _next_steps(self) -> str:
+        items = PriorityEngine().prioritize(self.graph)
+        lines = ["\n## Recommended Next Testing Areas\n"]
+        top = items[:8]
+        if not top:
+            lines.append("_No reachable services to recommend follow-up on._")
+            return "\n".join(lines)
+        for item in top:
+            lines.append(f"- **{item.asset}** — {'; '.join(item.reasons)}. "
+                         "Validate findings, then perform authorized, targeted "
+                         "testing appropriate to the service.")
+        lines.append("\n> All follow-up testing must remain within the authorized "
+                     "scope and follow the rules of engagement.")
+        return "\n".join(lines)
+
+    # -- json ------------------------------------------------------------- #
+    def _json_export(self) -> dict:
+        return {
+            "scope": self.scope.summary(),
+            "config": self.config.to_dict(),
+            "graph": self.graph.to_dict(),
+            "prioritization": [
+                {"asset": i.asset, "score": i.score,
+                 "top_severity": i.top_severity, "reasons": i.reasons}
+                for i in PriorityEngine().prioritize(self.graph)
+            ],
+        }
