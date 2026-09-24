@@ -25,22 +25,22 @@ Install straight from GitHub (gives you a `netassess` command anywhere):
 
 ```bash
 # with pipx (recommended for CLI tools)
-pipx install "git+https://github.com/OWNER/netassess.git"
+pipx install "git+https://github.com/cyberlord246/netassess.git"
 
 # or with pip
-pip install "git+https://github.com/OWNER/netassess.git"
+pip install "git+https://github.com/cyberlord246/netassess.git"
 ```
 
 Private repo? Authenticate first (e.g. a GitHub personal access token):
 
 ```bash
-pip install "git+https://TOKEN@github.com/OWNER/netassess.git"
+pip install "git+https://TOKEN@github.com/cyberlord246/netassess.git"
 ```
 
 Local/editable install for development:
 
 ```bash
-git clone https://github.com/OWNER/netassess.git
+git clone https://github.com/cyberlord246/netassess.git
 cd netassess
 pip install -e .
 ```

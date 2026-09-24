@@ -27,7 +27,7 @@ ai = ["anthropic>=0.39"]        # for --mode ai / --ai-provider anthropic
 netassess = "netassess.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/OWNER/netassess"
+Homepage = "https://github.com/cyberlord246/netassess"
 
 [tool.setuptools.packages.find]
 include = ["netassess*"]
