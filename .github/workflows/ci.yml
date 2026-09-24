@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Byte-compile (syntax check)
+        run: python -m compileall -q netassess
+
+      - name: Run test suite
+        run: |
+          set -e
+          for t in test_scope test_cve test_diff test_ferox; do
+            echo "::group::$t"
+            python -m netassess.tests.$t
+            echo "::endgroup::"
+          done
+
+      - name: Install package & smoke-test the CLI
+        run: |
+          set -e
+          pip install .
+          # run from a neutral dir so the installed copy is exercised, not the source
+          cd "$RUNNER_TEMP"
+          netassess scope check --targets 192.0.2.0/30 --exclude 192.0.2.1
+          python -c "import netassess.content_discovery as c, os; assert os.path.isfile(c._BUNDLED_WORDLIST), 'bundled wordlist missing'; print('bundled wordlist OK')"

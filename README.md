@@ -1,5 +1,7 @@
 # netassess
 
+[![CI](https://github.com/cyberlord246/netassess/actions/workflows/ci.yml/badge.svg)](https://github.com/cyberlord246/netassess/actions/workflows/ci.yml)
+
 **Authorized, safe, modular network attack-surface assessment platform.**
 
 Give it a list of IPs/CIDRs you are **explicitly authorized** to test; it builds
