@@ -219,6 +219,30 @@ python -m netassess network scan --targets targets.txt --vhosts
 it only varies the `Host` header against IPs already authorized and open, using
 certificate data you already have. GET-only, scope-gated, non-destructive.
 
+## nuclei integration (`--nuclei`, light by default)
+
+With `--nuclei` (and nuclei installed), netassess runs ProjectDiscovery's
+templates against the **web URLs it already discovered** — never a blind sweep —
+using a profile tuned to stay light on targets:
+
+- **targeted input** — only confirmed, in-scope URLs are tested;
+- heavy template classes **excluded** (`dos,fuzzing,intrusive,brute-force,
+  token-spray,headless`) — kept templates are mostly one request each;
+- **rate/concurrency caps** (`-rl 30 -c 10 -bs 10`), short timeout, one retry;
+- **`-no-interactsh`** (no external OOB callbacks) and `-duc`.
+
+```bash
+python -m netassess network scan --targets targets.txt --nuclei
+python -m netassess network scan --targets targets.txt --nuclei --nuclei-rate 15
+python -m netassess network scan --targets targets.txt --nuclei-thorough
+```
+
+Results are normalized into the `Finding` schema; **CVE templates carry their
+CVE id, so KEV/EPSS enrichment applies to them too.** `--nuclei-thorough`
+broadens the template set (still excluding dos/fuzzing/intrusive/headless) and
+raises the rate. If nuclei isn't installed, the phase is skipped.
+Install: <https://github.com/projectdiscovery/nuclei>.
+
 ## Content discovery (web path enumeration)
 
 With `--content-discovery`, after HTTP services are found the tool requests a

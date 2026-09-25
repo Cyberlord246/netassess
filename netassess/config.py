@@ -74,6 +74,11 @@ class Config:
     # --- virtual-host probing ---------------------------------------------
     vhost_probe: bool = False          # probe TLS SAN/CN hostnames as vhosts (in-scope)
 
+    # --- nuclei -----------------------------------------------------------
+    nuclei: bool = False               # run nuclei against discovered URLs (if installed)
+    nuclei_thorough: bool = False      # relax the light template filter
+    nuclei_rate: int = 30              # nuclei requests/sec cap
+
     # --- report -----------------------------------------------------------
     html_report: bool = True          # also emit report.html
     report_min_severity: str = "medium"  # suppress findings below this in reports

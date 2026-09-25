@@ -52,8 +52,15 @@ class AssessmentEngine:
         self.ferox = self._build_ferox(config)
         self.udp = UDPScanner(config, self.scope) if config.udp_scan else None
         self.vhost = VhostProber(config, self.scope) if config.vhost_probe else None
+        self.nuclei = self._build_nuclei(config)
         self.orch = Orchestrator(config)
         self._log = log or (lambda *a, **k: None)
+
+    def _build_nuclei(self, config: Config):
+        if not config.nuclei:
+            return None
+        from .adapters.nuclei_adapter import NucleiAdapter
+        return NucleiAdapter()
 
     def _build_ferox(self, config: Config):
         if not config.content_discovery or config.content_tool == "builtin":
@@ -99,6 +106,8 @@ class AssessmentEngine:
         self._phase_content()
         self._save()
         self._phase_vhost()
+        self._save()
+        self._phase_nuclei()
         self._save()
         self._phase_udp()
         self._save()
@@ -269,6 +278,39 @@ class AssessmentEngine:
             except Exception as exc:
                 host.notes.append(f"vhost probe error on {svc.port}: {exc}")
         self._log(f"[vhost] {added} distinct virtual host(s) discovered")
+
+    def _phase_nuclei(self):
+        if self.nuclei is None:
+            return
+        if not self.nuclei.available():
+            self._log("[nuclei] requested but nuclei not found on PATH — skipped")
+            return
+        # only in-scope, already-discovered web URLs
+        urls = []
+        for host, svc in self.graph.all_http_services():
+            if self.scope.authorize(svc.ip, svc.port).allowed:
+                urls.append(svc.url)
+        urls = sorted(set(urls))
+        if not urls:
+            self._log("[nuclei] no discovered web URLs to test")
+            return
+        profile = "thorough" if self.config.nuclei_thorough else "light"
+        self._log(f"[nuclei] scanning {len(urls)} URL(s) ({profile} profile, "
+                  f"rate {self.config.nuclei_rate}/s)…")
+        findings, res = self.nuclei.scan(
+            urls, thorough=self.config.nuclei_thorough, rate=self.config.nuclei_rate)
+        if res.not_found:
+            self._log("[nuclei] binary vanished — skipped")
+            return
+        added = 0
+        for f in findings:
+            ip = f.asset.split(":", 1)[0]
+            host = self.graph.get(ip) or self.graph.get_or_create(ip)
+            before = len(host.findings)
+            host.add_finding(f)
+            if len(host.findings) > before:
+                added += 1
+        self._log(f"[nuclei] {added} finding(s) added")
 
     def _phase_udp(self):
         if self.udp is None:

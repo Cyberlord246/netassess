@@ -107,6 +107,13 @@ def _build_config(args) -> Config:
         cfg.udp_ports = udp_ports
     if getattr(args, "vhosts", False):
         cfg.vhost_probe = True
+    if getattr(args, "nuclei", False):
+        cfg.nuclei = True
+    if getattr(args, "nuclei_thorough", False):
+        cfg.nuclei = True
+        cfg.nuclei_thorough = True
+    if getattr(args, "nuclei_rate", None):
+        cfg.nuclei_rate = args.nuclei_rate
     if getattr(args, "content_discovery", False):
         cfg.content_discovery = True
     if getattr(args, "wordlist", None):
@@ -177,6 +184,14 @@ def cmd_scan(args) -> int:
     else:
         print(f" udp         : off")
     print(f" vhosts      : {'on (TLS SAN/CN vhost probing)' if cfg.vhost_probe else 'off'}")
+    if cfg.nuclei:
+        from .adapters.nuclei_adapter import NucleiAdapter
+        n_ok = NucleiAdapter().available()
+        prof = "thorough" if cfg.nuclei_thorough else "light"
+        print(f" nuclei      : on ({prof} profile, rate {cfg.nuclei_rate}/s)"
+              + ("" if n_ok else " — NOT INSTALLED, will skip"))
+    else:
+        print(f" nuclei      : off")
     print("-" * 60)
 
     engine = AssessmentEngine(cfg, log=_logger(True))
@@ -380,6 +395,15 @@ def _add_scan_args(sp: argparse.ArgumentParser):
     sp.add_argument("--vhosts", action="store_true",
                     help="probe TLS certificate SAN/CN hostnames as virtual hosts "
                          "on the same in-scope IP (finds apps an IP-only scan misses)")
+    sp.add_argument("--nuclei", action="store_true",
+                    help="run nuclei (if installed) against discovered URLs with a "
+                         "light, target-friendly template profile")
+    sp.add_argument("--nuclei-thorough", dest="nuclei_thorough",
+                    action="store_true",
+                    help="run nuclei with a broader template set (still excludes "
+                         "dos/fuzzing/intrusive/headless)")
+    sp.add_argument("--nuclei-rate", dest="nuclei_rate", type=int,
+                    help="nuclei requests/sec cap (default 30)")
     sp.add_argument("--deep", action="store_true", help="deeper (still safe) probes")
     sp.add_argument("--concurrency", type=int)
     sp.add_argument("--rate", type=float, help="max new connections/sec")
