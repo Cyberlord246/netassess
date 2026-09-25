@@ -50,8 +50,11 @@ docker compose build
 docker compose run --rm netassess network scan --targets targets.txt --nuclei
 ```
 
-> Tool binaries are fetched for **linux/amd64**. On Apple Silicon build with
-> `docker build --platform linux/amd64 -t netassess .`.
+Runs on **macOS, Linux/Ubuntu, and Windows** (anywhere Docker runs). The build
+selects native tool binaries for your architecture — **Intel/AMD (amd64) and
+Apple Silicon (arm64)** — so a plain `docker build` just works. If a tool has no
+binary for your arch it's skipped and netassess falls back to its built-in
+equivalent.
 
 ## Install (without Docker)
 
