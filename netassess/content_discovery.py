@@ -24,8 +24,9 @@ import re
 import socket
 import ssl
 import string
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from queue import Empty, Queue
 
 from .config import Config
 from .models import (
@@ -230,92 +231,148 @@ class ContentDiscovery:
         self.paths = _load_wordlist(getattr(config, "content_wordlist", None),
                                     quick=getattr(config, "content_quick", False))
 
-    # -- low-level GET (scope-gated) ------------------------------------- #
-    def _get(self, ip: str, port: int, scheme: str, host_header: str, path: str):
-        with self.scope.slot(ip, port) as s:
-            if not s.allowed:
-                return None
-            try:
-                if scheme == "https":
-                    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-                    ctx.check_hostname = False
-                    ctx.verify_mode = ssl.CERT_NONE
-                    conn = http.client.HTTPSConnection(
-                        ip, port, timeout=self.config.timeout, context=ctx)
-                else:
-                    conn = http.client.HTTPConnection(
-                        ip, port, timeout=self.config.timeout)
-                headers = {
-                    "Host": host_header,
-                    "User-Agent": "netassess/1.0 (authorized security assessment)",
-                    "Accept": "*/*",
-                    "Connection": "close",
-                }
-                conn.request("GET", "/" + path.lstrip("/"), headers=headers)
-                resp = conn.getresponse()
-                body = resp.read(_MAX_BODY)
-                status = resp.status
-                loc = resp.getheader("Location", "")
-                conn.close()
-                return status, len(body), body, loc
-            except (http.client.HTTPException, ssl.SSLError, socket.timeout,
-                    OSError):
-                return None
+    # -- persistent (keep-alive) connection I/O -------------------------- #
+    def _open(self, ip: str, port: int, scheme: str):
+        if scheme == "https":
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            return http.client.HTTPSConnection(
+                ip, port, timeout=self.config.timeout, context=ctx)
+        return http.client.HTTPConnection(ip, port, timeout=self.config.timeout)
+
+    def _read_bounded(self, resp, keep: int = _MAX_BODY,
+                      max_drain: int = 2 * 1024 * 1024):
+        """Read the body: keep the first `keep` bytes, fully drain the rest so
+        the connection can be reused. Returns (head, total_len, fully_drained)."""
+        head = b""
+        total = 0
+        fully = True
+        while True:
+            chunk = resp.read(65536)
+            if not chunk:
+                break
+            total += len(chunk)
+            if len(head) < keep:
+                head += chunk[: keep - len(head)]
+            if total > max_drain:
+                fully = False          # too big to safely drain -> don't reuse
+                break
+        return head, total, fully
+
+    def _request_on(self, conn, ip, port, scheme, host_header, path):
+        """One keep-alive GET on a (possibly reused) connection. Returns
+        (conn, result|None); reopens the connection on error and retries once."""
+        headers = {
+            "Host": host_header,
+            "User-Agent": "netassess/1.0 (authorized security assessment)",
+            "Accept": "*/*",
+            "Connection": "keep-alive",
+        }
+        for _attempt in range(2):
+            if not self.scope.authorize(ip, port).allowed:
+                return conn, None
+            with self.scope.slot(ip, port) as s:
+                if not s.allowed:
+                    return conn, None
+                try:
+                    if conn is None:
+                        conn = self._open(ip, port, scheme)
+                    conn.request("GET", "/" + path.lstrip("/"), headers=headers)
+                    resp = conn.getresponse()
+                    head, total, fully = self._read_bounded(resp)
+                    status = resp.status
+                    loc = resp.getheader("Location", "")
+                    reuse = fully and resp.getheader("Connection", "").lower() != "close"
+                    if not reuse:
+                        try:
+                            conn.close()
+                        except OSError:
+                            pass
+                        conn = None
+                    return conn, (status, total, head, loc)
+                except (http.client.HTTPException, ssl.SSLError, socket.timeout,
+                        OSError):
+                    try:
+                        if conn:
+                            conn.close()
+                    except OSError:
+                        pass
+                    conn = None          # retry once with a fresh connection
+        return conn, None
 
     def _baseline(self, ip, port, scheme, host_header):
         """Detect soft-404: does the server answer 200 to nonsense paths?"""
         lengths = []
         status_200 = False
+        conn = None
         for _ in range(2):
             rnd = "".join(random.choices(string.ascii_lowercase, k=16))
-            r = self._get(ip, port, scheme, host_header, f"{rnd}")
-            if r is None:
-                continue
-            status, length, _body, _loc = r
-            if status == 200:
+            conn, r = self._request_on(conn, ip, port, scheme, host_header, rnd)
+            if r and r[0] == 200:
                 status_200 = True
-                lengths.append(length)
+                lengths.append(r[1])
+        if conn:
+            try:
+                conn.close()
+            except OSError:
+                pass
         base_len = sum(lengths) / len(lengths) if lengths else 0
         return status_200, base_len
 
-    # -- per-service scan ------------------------------------------------- #
+    # -- per-service scan (pool of reused connections) ------------------- #
     def scan_service(self, host: Host, svc: HTTPService) -> list[Finding]:
         ip, port, scheme = svc.ip, svc.port, svc.scheme
         host_header = host.hostnames[0] if host.hostnames else ip
         soft404, base_len = self._baseline(ip, port, scheme, host_header)
 
-        def probe_path(entry):
-            path, category, sev = entry
-            r = self._get(ip, port, scheme, host_header, path)
-            if r is None:
-                return None
-            status, length, body, _loc = r
-            if status not in _PRESENT:
-                return None
-            # soft-404 suppression: if the server 200s everything, ignore 200s
-            # whose size matches the nonsense baseline.
-            if soft404 and status == 200 and abs(length - base_len) < 64:
-                return None
-            title = ""
-            m = _TITLE_RE.search(body.decode("utf-8", "replace"))
-            if m:
-                title = re.sub(r"\s+", " ", m.group(1)).strip()[:120]
-            url = f"{scheme}://{ip}:{port}/{path}"
-            rec = {"path": "/" + path, "status": status, "length": length,
-                   "category": category, "title": title}
-            finding = self._to_finding(host, svc, path, url, status, category,
-                                       sev, title)
-            return rec, finding
-
+        q: "Queue" = Queue()
+        for entry in self.paths:
+            q.put(entry)
         findings: list[Finding] = []
         discovered: list[dict] = []
-        workers = max(2, min(self.config.concurrency, 64))
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            for res in pool.map(probe_path, self.paths):
-                if res is not None:
-                    rec, finding = res
+        lock = threading.Lock()
+
+        def worker():
+            conn = None               # this worker's own reused connection
+            while True:
+                try:
+                    path, category, sev = q.get_nowait()
+                except Empty:
+                    break
+                conn, r = self._request_on(conn, ip, port, scheme, host_header, path)
+                if r is None:
+                    continue
+                status, length, body, _loc = r
+                if status not in _PRESENT:
+                    continue
+                if soft404 and status == 200 and abs(length - base_len) < 64:
+                    continue
+                title = ""
+                m = _TITLE_RE.search(body.decode("utf-8", "replace"))
+                if m:
+                    title = re.sub(r"\s+", " ", m.group(1)).strip()[:120]
+                url = f"{scheme}://{ip}:{port}/{path}"
+                rec = {"path": "/" + path, "status": status, "length": length,
+                       "category": category, "title": title}
+                finding = self._to_finding(host, svc, path, url, status,
+                                           category, sev, title)
+                with lock:
                     discovered.append(rec)
                     findings.append(finding)
+            if conn:
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+
+        n_workers = max(2, min(self.config.concurrency, 64))
+        threads = [threading.Thread(target=worker, daemon=True)
+                   for _ in range(n_workers)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
         discovered.sort(key=lambda x: x["path"])
         svc.discovered_paths = discovered
         return findings
