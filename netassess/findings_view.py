@@ -21,6 +21,15 @@ from .models import (
 
 _SEV_FROM_STR = {s.value: s for s in Severity}
 
+# when merging one title across hosts, the most-confirmed validation wins the bucket
+VALIDATION_RANK = {
+    ValidationState.CONFIRMED: 4,
+    ValidationState.NEEDS_VALIDATION: 3,
+    ValidationState.POTENTIAL: 2,
+    ValidationState.OBSERVED: 1,
+    ValidationState.FALSE_POSITIVE: 0,
+}
+
 
 def severity_from_str(value: str) -> Severity:
     return _SEV_FROM_STR.get((value or "").lower(), Severity.MEDIUM)
@@ -83,10 +92,9 @@ def build_view(graph, min_severity: str = "info",
         kept += 1
         sev_counts[f.severity.value] = sev_counts.get(f.severity.value, 0) + 1
 
-        if aggregate:
-            key = (f.title, f.severity, f.validation, f.category, f.source)
-        else:
-            key = (f.title, f.asset, f.severity, f.validation)
+        # aggregate=True: ONE entry per title, covering all hosts, merged to the
+        # worst case (highest severity / most-confirmed / KEV / max EPSS).
+        key = f.title if aggregate else (f.title, f.asset)
 
         agg = groups.get(key)
         if agg is None:
@@ -100,9 +108,19 @@ def build_view(graph, min_severity: str = "info",
         if f.asset not in agg.evidence_by_asset:
             agg.assets.append(f.asset)
             agg.evidence_by_asset[f.asset] = f.evidence
-        # keep the strongest confidence seen across merged instances
+        # adopt the most-severe instance's severity + context so the merged entry
+        # reflects the worst case seen for this title
+        if SEVERITY_ORDER[f.severity] > SEVERITY_ORDER[agg.severity]:
+            agg.severity = f.severity
+            agg.description = f.description or agg.description
+            agg.why_it_matters = f.why_it_matters or agg.why_it_matters
+            agg.impact = f.impact or agg.impact
+            agg.remediation = f.remediation or agg.remediation
+            agg.category = f.category or agg.category
         if CONFIDENCE_ORDER[f.confidence] > CONFIDENCE_ORDER[agg.confidence]:
             agg.confidence = f.confidence
+        if VALIDATION_RANK.get(f.validation, 0) > VALIDATION_RANK.get(agg.validation, 0):
+            agg.validation = f.validation
         if getattr(f, "kev", False):
             agg.kev = True
         fe = getattr(f, "epss", None)

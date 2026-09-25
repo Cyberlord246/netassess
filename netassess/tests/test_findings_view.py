@@ -78,6 +78,24 @@ def test_no_suppression_when_list_empty():
     assert "Missing HTTP security headers" in titles
 
 
+def test_same_title_merges_across_differing_severity_and_validation():
+    # same title, but different severity + validation per host -> still ONE entry
+    g = AssetGraph()
+    g.get_or_create("192.0.2.10").add_finding(Finding(
+        title="Administrative interface reachable: /admin", asset="192.0.2.10:80",
+        severity=Severity.LOW, validation=ValidationState.OBSERVED))
+    g.get_or_create("192.0.2.11").add_finding(Finding(
+        title="Administrative interface reachable: /admin", asset="192.0.2.11:80",
+        severity=Severity.MEDIUM, validation=ValidationState.CONFIRMED))
+    view = build_view(g, min_severity="info", aggregate=True)
+    aggs = [a for bucket in view.by_validation.values() for a in bucket]
+    match = [a for a in aggs if a.title.endswith("/admin")]
+    assert len(match) == 1                       # single title entry
+    assert match[0].count == 2                   # both hosts
+    assert match[0].severity == Severity.MEDIUM  # worst-case severity
+    assert match[0].validation == ValidationState.CONFIRMED  # most-confirmed
+
+
 def test_raising_floor_still_suppresses():
     g = _graph_with([
         ("192.0.2.10:80", "Missing HTTP security headers", Severity.LOW),
