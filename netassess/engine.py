@@ -152,15 +152,20 @@ class AssessmentEngine:
             return
         ports = self.config.effective_ports()
         self._log(f"[ports] scanning {len(targets)} host(s) × {len(ports)} port(s) "
-                  f"via {self.scanner.backend}…")
-        for ip in targets:
-            found = self.scanner.scan_host(ip, ports)
+                  f"via {self.scanner.backend} (concurrent)…")
+        results = self.scanner.scan_hosts(targets, ports,
+                                          progress=self._progress("ports"))
+        opened = 0
+        for ip, found in results.items():
             host = self.graph.get_or_create(ip)
             for p in found:
                 host.ports[p.number] = p
             if found:
-                self._log(f"[ports] {ip}: {len(found)} open "
+                opened += 1
+                self._log(f"\n[ports] {ip}: {len(found)} open "
                           f"({', '.join(str(p.number) for p in found)})")
+        if not opened:
+            self._log("\n[ports] no open ports found")
 
     def _phase_service_id(self):
         for _h, port in self.graph.iter_open_ports():

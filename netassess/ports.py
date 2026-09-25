@@ -134,3 +134,67 @@ class PortScanner:
                 return nmap_ports
             # nmap failed -> graceful fallback to python
         return self.pure.scan_host(ip, ports, progress)
+
+    def scan_hosts(self, targets: list[str], ports: Optional[list[int]] = None,
+                   progress: Optional[Callable[[int, int], None]] = None
+                   ) -> dict[str, list[Port]]:
+        """Scan many hosts concurrently, bounded by the global concurrency/rate
+        budget (the scope engine's shared semaphore + token bucket cap total
+        in-flight connections regardless of how many hosts run at once).
+
+        - python backend: flatten every (host, port) into ONE bounded thread
+          pool sized to ``concurrency`` — keeps the budget fully utilised across
+          all hosts instead of draining one host at a time, with no thread
+          explosion (exactly ``concurrency`` workers total).
+        - nmap backend: run per-host nmap invocations in parallel (each is its
+          own process with internal timing), capped to a modest worker count.
+        """
+        ports = ports if ports is not None else self.config.effective_ports()
+        results: dict[str, list[Port]] = {ip: [] for ip in targets}
+        if not targets or not ports:
+            return results
+
+        if self.backend == "nmap":
+            workers = max(1, min(len(targets), 16))
+
+            def _one(ip: str):
+                allowed = [p for p in ports if self.scope.authorize(ip, p).allowed]
+                if not allowed:
+                    return ip, []
+                nmap_ports, res = self.nmap.scan(
+                    ip, allowed,
+                    timeout=max(60.0, self.config.timeout * len(allowed) / 10),
+                    service_detection=self.config.service_detection,
+                )
+                if res.ok or nmap_ports:
+                    return ip, nmap_ports
+                return ip, self.pure.scan_host(ip, allowed)   # fallback
+
+            done = 0
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                for fut in as_completed({pool.submit(_one, ip): ip for ip in targets}):
+                    ip, found = fut.result()
+                    results[ip] = found
+                    done += 1
+                    if progress:
+                        progress(done, len(targets))
+        else:
+            # flatten (host, port) across all hosts into one bounded pool
+            pairs = [(ip, p) for ip in targets for p in ports]
+            total = len(pairs)
+            done = 0
+            with ThreadPoolExecutor(max_workers=max(1, self.config.concurrency)) as pool:
+                futures = {pool.submit(self.pure.scan_port, ip, p): ip
+                           for ip, p in pairs}
+                for fut in as_completed(futures):
+                    ip = futures[fut]
+                    done += 1
+                    if progress:
+                        progress(done, total)
+                    port = fut.result()
+                    if port is not None:
+                        results[ip].append(port)
+
+        for ip in results:
+            results[ip].sort(key=lambda p: p.number)
+        return results
