@@ -31,9 +31,9 @@ RUN apt-get update \
 ARG TARGETARCH
 RUN set -ux; \
     case "${TARGETARCH:-amd64}" in \
-      amd64) NARCH="linux_amd64"; FARCH="x86_64-linux" ;; \
-      arm64) NARCH="linux_arm64"; FARCH="aarch64-linux" ;; \
-      *)     NARCH="linux_amd64"; FARCH="x86_64-linux" ;; \
+      amd64) NARCH="linux_amd64"; FFILE="x86_64-linux-feroxbuster.tar.gz" ;; \
+      arm64) NARCH="linux_arm64"; FFILE="aarch64-linux-feroxbuster.zip" ;; \
+      *)     NARCH="linux_amd64"; FFILE="x86_64-linux-feroxbuster.tar.gz" ;; \
     esac; \
     # extract browser_download_url values even from minified JSON
     nurl="$(curl -sSL https://api.github.com/repos/projectdiscovery/nuclei/releases/latest \
@@ -48,14 +48,17 @@ RUN set -ux; \
     else echo "nuclei: no ${NARCH} asset — skipping (netassess still runs)"; fi; \
     furl="$(curl -sSL https://api.github.com/repos/epi052/feroxbuster/releases/latest \
         | grep -oE '\"browser_download_url\":[[:space:]]*\"[^\"]+\"' \
-        | sed -E 's/.*\"(https[^\"]+)\"/\1/' | grep -i "${FARCH}-feroxbuster\.tar\.gz" | head -1)"; \
+        | sed -E 's/.*\"(https[^\"]+)\"/\1/' | grep -F "${FFILE}" | head -1)"; \
     if [ -n "$furl" ]; then \
-        curl -sSL "$furl" -o /tmp/ferox.tar.gz \
-        && tar -xzf /tmp/ferox.tar.gz -C /usr/local/bin feroxbuster \
+        curl -sSL "$furl" -o /tmp/ferox.pkg; \
+        case "$FFILE" in \
+          *.zip)    unzip -o /tmp/ferox.pkg -d /usr/local/bin feroxbuster ;; \
+          *.tar.gz) tar -xzf /tmp/ferox.pkg -C /usr/local/bin feroxbuster ;; \
+        esac \
         && chmod +x /usr/local/bin/feroxbuster && feroxbuster --version \
         || echo "feroxbuster install failed — skipping"; \
-        rm -f /tmp/ferox.tar.gz; \
-    else echo "feroxbuster: no ${FARCH} asset — built-in content discovery will be used"; fi
+        rm -f /tmp/ferox.pkg; \
+    else echo "feroxbuster: no ${FFILE} asset — built-in content discovery will be used"; fi
 
 # --- bake nuclei templates into the image (so runs need no update) --------
 RUN nuclei -update-templates 2>/dev/null || echo "template fetch skipped (nuclei absent or offline; fetch at runtime)"

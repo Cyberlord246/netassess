@@ -55,12 +55,9 @@ selects native tool binaries for your architecture — **Intel/AMD (amd64) and
 Apple Silicon (arm64)** — so a plain `docker build` just works. Both arches are
 build-verified (arm64 via emulation).
 
-Per-arch tool availability:
-
-| Tool | amd64 | arm64 (Apple Silicon) |
-|---|---|---|
-| netassess, nmap, nuclei (+templates) | ✅ | ✅ |
-| feroxbuster | ✅ | ✅ *(if a release exists)* — currently **no upstream arm64-linux binary**, so it's skipped and netassess's built-in `--content-discovery` is used instead |
+All bundled tools — **netassess, nmap, nuclei (+templates), and feroxbuster** —
+are present and verified on **both amd64 and arm64** (arm64 built & run via
+emulation: feroxbuster 2.13.1, nuclei v3.11.1, nmap 7.95).
 
 ## Install (without Docker)
 
