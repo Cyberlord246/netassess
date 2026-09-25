@@ -24,6 +24,7 @@ from .discovery import DiscoveryEngine
 from .dns_recon import ReverseDNS
 from .models import HostStatus
 from .ports import PortScanner
+from .roles import classify, detect_anomalies
 from .probers import build_generic, build_probes
 from .report import ReportGenerator
 from .scope import ScopeEngine
@@ -110,6 +111,8 @@ class AssessmentEngine:
         self._phase_nuclei()
         self._save()
         self._phase_udp()
+        self._save()
+        self._phase_roles()
         self._save()
         self._phase_vuln()
         self._save()
@@ -336,6 +339,26 @@ class AssessmentEngine:
                     if len(host.findings) > before:
                         findings += 1
         self._log(f"[udp] {open_count} open UDP port(s), {findings} finding(s) added")
+
+    def _phase_roles(self):
+        # pure analysis over the graph — no network
+        self._log("[roles] classifying host roles and detecting anomalies…")
+        classified = 0
+        anomalies = 0
+        for host in self.graph.hosts.values():
+            if not host.open_ports() and not host.udp_ports:
+                continue
+            rr = classify(host)
+            host.primary_role = rr.primary
+            host.roles = rr.roles
+            classified += 1
+            for f in detect_anomalies(host, rr):
+                before = len(host.findings)
+                host.add_finding(f)
+                if len(host.findings) > before:
+                    anomalies += 1
+        self._log(f"[roles] classified {classified} host(s); {anomalies} "
+                  "role anomaly finding(s)")
 
     def _phase_vuln(self):
         self._log("[vuln] running safe vulnerability heuristics…")

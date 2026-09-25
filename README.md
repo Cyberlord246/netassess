@@ -111,6 +111,10 @@ netassess diff --old baseline/state.json --new latest/state.json --fail-on worse
 - **Content discovery** — feroxbuster (auto, tuned for signal) or built-in probe,
   default SecLists `common.txt`; `--content-discovery`.
 - **CVE correlation** — offline KB with version-range matching, optional live NVD.
+- **Exploitation intel** — CISA KEV + FIRST EPSS enrichment flags actively-exploited CVEs.
+- **Asset-role classification + anomaly detection** — infers each host's role and
+  flags what doesn't fit (DB on a web host, exposed Docker/K8s/IPMI plane,
+  over-consolidated host, DC running extra services). Pure analysis, always on.
 - **Reports** — Markdown, self-contained HTML, and JSON; findings filtered to
   medium+ and aggregated across hosts by default.
 - **Diff mode** — compare two runs for new ports / new CVEs (great for monitoring).

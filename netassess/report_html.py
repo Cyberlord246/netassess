@@ -217,14 +217,16 @@ class HTMLReport:
 
     def _hosts(self) -> str:
         rows = ["<h2>Hosts &amp; Open Ports</h2>",
-                "<table><tr><th>IP</th><th>Hostname</th><th>Status</th>"
+                "<table><tr><th>IP</th><th>Hostname</th><th>Role</th><th>Status</th>"
                 "<th>Open ports (service)</th></tr>"]
         for ip in sorted(self.graph.hosts):
             h = self.graph.hosts[ip]
             ports = ", ".join(
                 f"{p.number}/{p.service.name}" for p in h.open_ports()) or "-"
+            role = h.primary_role if h.primary_role and h.primary_role != "unknown" else "-"
             rows.append(f"<tr><td class='mono'>{_esc(h.ip)}</td>"
                         f"<td>{_esc(h.hostnames[0] if h.hostnames else '-')}</td>"
+                        f"<td>{_esc(role)}</td>"
                         f"<td>{_esc(h.status.value)}</td>"
                         f"<td class='mono'>{_esc(ports)}</td></tr>")
         rows.append("</table>")

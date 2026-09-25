@@ -172,6 +172,8 @@ def _host_from_dict(d: dict) -> Host:
     h.hostnames = d.get("hostnames", [])
     h.discovery_method = d.get("discovery_method", "")
     h.latency_ms = d.get("latency_ms")
+    h.primary_role = d.get("primary_role", "")
+    h.roles = d.get("roles", [])
     h.ports = {int(k): _port_from_dict(v) for k, v in d.get("ports", {}).items()}
     h.udp_ports = {int(k): _port_from_dict(v) for k, v in d.get("udp_ports", {}).items()}
     h.http_services = [_http_from_dict(x) for x in d.get("http_services", [])]

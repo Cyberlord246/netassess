@@ -186,8 +186,9 @@ class ReportGenerator:
             ports = h.open_ports()
             if not ports:
                 continue
+            role = f" — _role: {h.primary_role}_" if h.primary_role and h.primary_role != "unknown" else ""
             lines.append(f"\n### {h.ip}"
-                         + (f" ({h.hostnames[0]})" if h.hostnames else ""))
+                         + (f" ({h.hostnames[0]})" if h.hostnames else "") + role)
             for p in ports:
                 svc = p.service
                 extra = f" — {svc.product} {svc.version}".rstrip() if svc.product else ""
