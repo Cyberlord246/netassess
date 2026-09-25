@@ -311,10 +311,25 @@ graph (service versions, banners, HTTP `Server` headers, detected technologies)
 and matches it against a **curated offline CVE knowledge base** with correct
 version-range comparison (handles `2.4.49`, `9.3p2`, `1.0.1f`, etc.).
 
-* **Offline by default** — no network required. The built-in KB is an
-  *illustrative starter set* of well-known CVEs; extend it in
-  [`cve/database.py`](cve/database.py) or supply your own via `--cve-db file.json`
-  (same schema).
+* **Offline by default** — no network required. A small built-in KB ships in
+  [`cve/database.py`](cve/database.py); for real coverage, run the **offline NVD
+  sync** once (below). Both are matched fully offline against versions already
+  collected — **zero extra traffic to your targets**.
+* **`netassess cve sync`** downloads CVE data from the NVD 2.0 API (talking to
+  NVD, never your targets) into `~/.netassess/nvd.json`, scoped to the products
+  netassess fingerprints. Scans then use it automatically. Example impact:
+  OpenSSH 7.4 goes from ~2 built-in matches to ~30+ real, version-matched CVEs.
+
+  ```bash
+  # one-time (or periodic) sync — set NVD_API_KEY for a much higher rate limit
+  netassess cve sync                       # all fingerprinted products
+  netassess cve sync --products nginx,openssh,apache
+  ```
+
+  > The keyless NVD API is heavily rate-limited and occasionally flaky (the sync
+  > retries with backoff). For a reliable full sync, get a free key at
+  > <https://nvd.nist.gov/developers/request-an-api-key> and `export NVD_API_KEY=…`.
+* Extend or override with your own file via `--cve-db file.json` (same schema).
 * **Opt-in live enrichment** — `--cve-online` queries the NVD 2.0 API (rate-limited,
   cached, best-effort; set `NVD_API_KEY` for a higher limit). This is the only
   component that reaches a third party, and it sends only product/version keywords.

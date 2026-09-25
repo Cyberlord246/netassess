@@ -54,6 +54,7 @@ class Config:
     cve_enabled: bool = True          # run offline CVE correlation
     cve_online: bool = False          # enrich via NVD (network, opt-in)
     cve_db: Optional[str] = None      # extra CVE JSON to merge into the KB
+    cve_nvd_cache: Optional[str] = None  # offline NVD sync cache (default ~/.netassess/nvd.json)
 
     # --- content discovery ------------------------------------------------
     content_discovery: bool = False   # probe common web paths (GET-only, opt-in)

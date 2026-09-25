@@ -233,6 +233,28 @@ def cmd_diff(args) -> int:
     return 0
 
 
+def cmd_cve_sync(args) -> int:
+    from .cve.nvd_sync import NVDSync, PRODUCTS, default_cache_path
+
+    products = PRODUCTS
+    if getattr(args, "products", None):
+        wanted = {p.strip().lower() for p in args.products.split(",")}
+        products = [p for p in PRODUCTS
+                    if p["name"].lower() in wanted
+                    or any(k in wanted for k in p["keywords"])]
+        if not products:
+            print(f"error: no known products match {sorted(wanted)}; known: "
+                  f"{', '.join(p['name'] for p in PRODUCTS)}", file=sys.stderr)
+            return 2
+    out = args.output or default_cache_path()
+    print("Syncing offline CVE data from NVD (talks to NVD, not your targets).")
+    print("Tip: set NVD_API_KEY for a much higher rate limit.\n")
+    res = NVDSync().sync(products=products, out_path=out)
+    print(f"\nDone: {res['count']} CVE(s) cached at {res['path']}")
+    print("Future scans use this automatically (offline, no target traffic).")
+    return 0
+
+
 def cmd_report(args) -> int:
     state_path = args.state
     if not os.path.isfile(state_path):
@@ -289,6 +311,16 @@ def build_parser() -> argparse.ArgumentParser:
                     help="exit non-zero on: any change, or 'worse' (new open "
                          "ports/findings). Default never.")
     dp.set_defaults(func=cmd_diff)
+
+    # cve sync
+    cve = sub.add_parser("cve", help="CVE data utilities")
+    cvesub = cve.add_subparsers(dest="cmd", required=True)
+    sync = cvesub.add_parser("sync", help="download offline NVD CVE cache "
+                                          "(no target traffic)")
+    sync.add_argument("--output", help="cache path (default ~/.netassess/nvd.json)")
+    sync.add_argument("--products", help="comma list to limit (e.g. nginx,openssh); "
+                                         "default = all fingerprinted products")
+    sync.set_defaults(func=cmd_cve_sync)
 
     # report
     rep = sub.add_parser("report", help="regenerate a report from saved state")

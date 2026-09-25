@@ -132,10 +132,17 @@ def load_db(path: str | None = None) -> list[dict]:
     """Return the built-in DB, optionally extended/overridden by a JSON file."""
     db = list(CVE_DB)
     if path:
-        with open(path, "r", encoding="utf-8") as fh:
-            extra = json.load(fh)
-        if isinstance(extra, dict) and "cves" in extra:
-            extra = extra["cves"]
-        if isinstance(extra, list):
-            db.extend(extra)
+        db.extend(load_cache_file(path))
     return db
+
+
+def load_cache_file(path: str) -> list[dict]:
+    """Load a CVE JSON file (a bare list, or an object with a "cves" list)."""
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return []
+    if isinstance(data, dict) and "cves" in data:
+        data = data["cves"]
+    return data if isinstance(data, list) else []

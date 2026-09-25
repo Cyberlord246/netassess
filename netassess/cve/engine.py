@@ -16,8 +16,11 @@ import re
 from ..models import (
     Confidence, Finding, Host, Port, Severity, ValidationState,
 )
+import os
+
 from ..state import AssetGraph
-from .database import load_db
+from .database import load_db, load_cache_file
+from .nvd_sync import default_cache_path
 from .version import in_range, parse_version
 
 _SEV_MAP = {
@@ -32,7 +35,15 @@ _VER_TOKEN = re.compile(r"([A-Za-z][A-Za-z0-9_+.-]*?)[/ _-]v?(\d+(?:\.\d+)+[a-z]
 class CVEEngine:
     def __init__(self, config, online_adapter=None):
         self.config = config
-        self.db = load_db(getattr(config, "cve_db", None))
+        db = load_db(getattr(config, "cve_db", None))
+        # merge the offline NVD sync cache if present (default ~/.netassess/nvd.json)
+        cache = getattr(config, "cve_nvd_cache", None) or default_cache_path()
+        self.nvd_cache_loaded = 0
+        if os.path.isfile(cache):
+            extra = load_cache_file(cache)
+            db.extend(extra)
+            self.nvd_cache_loaded = len(extra)
+        self.db = db
         self.online = online_adapter
 
     # -- evidence extraction --------------------------------------------- #

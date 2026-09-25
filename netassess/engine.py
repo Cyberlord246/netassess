@@ -248,7 +248,11 @@ class AssessmentEngine:
             self._log("[cve] disabled")
             return
         mode = "offline+NVD" if self.config.cve_online else "offline KB"
-        self._log(f"[cve] correlating service versions against CVEs ({mode})…")
+        cache_note = (f", +{self.cve.nvd_cache_loaded} from NVD cache"
+                      if getattr(self.cve, "nvd_cache_loaded", 0) else
+                      " (no NVD cache — run `netassess cve sync`)")
+        self._log(f"[cve] correlating service versions against "
+                  f"{len(self.cve.db)} CVE(s) [{mode}{cache_note}]…")
         n = self.cve.assess(self.graph)
         self._log(f"[cve] {n} CVE lead(s) added (marked NEEDS_VALIDATION)")
 
