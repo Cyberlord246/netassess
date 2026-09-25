@@ -145,7 +145,7 @@ Vulnerability Assessment → Correlation → Prioritization → Report
 | `dns_recon.py` | Reverse DNS (PTR) — evidence only, not proof of ownership |
 | `ports.py` | Pure-Python scanner + optional Nmap backend |
 | `services.py` | Port+banner service identification |
-| `probers/` | `ServiceProbe` interface: HTTP, TLS, SSH, SMTP, DNS, SMB, DB, Generic |
+| `probers/` | `ServiceProbe` interface: HTTP, TLS, SSH, SMTP, DNS, SMB, LDAP, RDP, VNC, rsync, DB, Generic |
 | `techdetect.py` | HTTP technology fingerprinting with evidence/confidence |
 | `vuln/` | Safe, evidence-gated vulnerability heuristics + external-scanner hook |
 | `cve/` | Offline CVE knowledge base + version-range matching + optional NVD enrichment |
