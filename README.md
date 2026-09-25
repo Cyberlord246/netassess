@@ -115,8 +115,9 @@ netassess diff --old baseline/state.json --new latest/state.json --fail-on worse
 - **Asset-role classification + anomaly detection** — infers each host's role and
   flags what doesn't fit (DB on a web host, exposed Docker/K8s/IPMI plane,
   over-consolidated host, DC running extra services). Pure analysis, always on.
-- **Reports** — Markdown, self-contained HTML, and JSON; findings filtered to
-  medium+ and aggregated across hosts by default.
+- **Reports** — Markdown, self-contained HTML, and JSON; **all severities
+  (info+) shown by default**, with same-title findings aggregated into one entry
+  across hosts. Raise the floor with `--min-severity` (e.g. `medium`, `high`).
 - **Diff mode** — compare two runs for new ports / new CVEs (great for monitoring).
 
 Full documentation lives in **[`netassess/README.md`](netassess/README.md)**.

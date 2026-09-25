@@ -326,30 +326,28 @@ file with a newer copy.
 
 ## Report signal (severity filter + aggregation)
 
-Reports are kept signal-dense by default:
+Reports stay readable without hiding anything:
 
-* **Severity filter** — only findings at **medium and above** are shown. Noise
-  like *missing security headers* (low) and *version disclosure* (info) is
-  suppressed. Lower it with `--min-severity low|info`, or show everything with
-  `--all-findings`.
-* **Cross-host aggregation** — the same issue seen on many hosts is collapsed
-  into **one entry that lists all affected assets** (e.g. "Deprecated TLS
-  versions × 3 hosts"), instead of repeating it per host. Disable with
-  `--no-aggregate`.
+* **Severity floor** — **all severities (info+) are shown by default**, so low
+  and informational findings (e.g. *missing security headers*, *version
+  disclosure*) are included. Raise the floor when you want to focus:
+  `--min-severity medium` (or `high`, `critical`).
+* **Cross-host aggregation** — the same issue seen on many hosts collapses into
+  **one entry listing all affected assets** (e.g. "Missing HTTP security headers
+  × 12 hosts") — so info/low findings never become per-host noise. This applies
+  to every severity. Disable with `--no-aggregate`.
 
-Both apply only to the human reports (`report.md` / `report.html`). The full,
-unfiltered data is always kept in `report.json` and `state.json`, so diffing and
-machine processing stay complete.
+The full, unfiltered data is always in `report.json` and `state.json` too.
 
 ```bash
-# default: medium+, aggregated
+# default: everything (info+), aggregated by title across hosts
 python -m netassess network scan --targets targets.txt
 
-# show everything, one row per host
-python -m netassess network scan --targets targets.txt --all-findings --no-aggregate
+# focus the report on medium and above
+python -m netassess network scan --targets targets.txt --min-severity medium
 
-# only high/critical in the report
-python -m netassess network scan --targets targets.txt --min-severity high
+# one row per host instead of aggregating
+python -m netassess network scan --targets targets.txt --no-aggregate
 ```
 
 ## Diff mode (change monitoring / re-tests)

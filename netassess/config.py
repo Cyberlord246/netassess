@@ -81,7 +81,7 @@ class Config:
 
     # --- report -----------------------------------------------------------
     html_report: bool = True          # also emit report.html
-    report_min_severity: str = "medium"  # suppress findings below this in reports
+    report_min_severity: str = "info"  # show all severities (info+); raise with --min-severity
     report_aggregate: bool = True     # collapse same finding across hosts into one
 
     # --- ai ---------------------------------------------------------------
