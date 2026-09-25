@@ -75,8 +75,9 @@ class HTMLReport:
         g = self.graph
         view = build_view(
             g,
-            min_severity=getattr(self.config, "report_min_severity", "medium"),
+            min_severity=getattr(self.config, "report_min_severity", "info"),
             aggregate=getattr(self.config, "report_aggregate", True),
+            suppress_titles=getattr(self.config, "report_suppress_titles", None),
         )
         sev_counts = view.severity_counts
         parts = [
@@ -174,10 +175,10 @@ class HTMLReport:
         ]
         out = ["<h2>Findings</h2>"]
         if view.suppressed:
-            out.append(f"<p class='note'>Showing severity &ge; "
-                       f"<b>{_esc(view.threshold.value)}</b>; "
-                       f"{view.suppressed} lower-severity/informational finding(s) "
-                       "suppressed. Full detail in report.json.</p>")
+            out.append(f"<p class='note'>{view.suppressed} low-signal finding(s) "
+                       f"hidden (suppressed titles, or below severity "
+                       f"<b>{_esc(view.threshold.value)}</b>). Full detail in "
+                       "report.json.</p>")
         for title, states in order:
             group = [a for st in states for a in by_val.get(st, [])]
             group.sort(key=lambda a: (SEVERITY_ORDER[a.severity], a.count),

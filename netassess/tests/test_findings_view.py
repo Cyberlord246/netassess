@@ -57,6 +57,27 @@ def test_info_across_hosts_single_title():
     assert len(disc) == 1 and disc[0].count == 2
 
 
+def test_suppress_titles_hidden_regardless_of_severity():
+    g = _graph_with([
+        ("192.0.2.10:80", "Missing HTTP security headers", Severity.LOW),
+        ("192.0.2.11:80", "Missing HTTP security headers", Severity.LOW),
+        ("192.0.2.10:443", "Deprecated TLS protocol versions enabled", Severity.MEDIUM),
+    ])
+    view = build_view(g, min_severity="info", aggregate=True,
+                      suppress_titles=["Missing HTTP security headers"])
+    titles = {a.title for aggs in view.by_validation.values() for a in aggs}
+    assert "Missing HTTP security headers" not in titles   # hidden
+    assert "Deprecated TLS protocol versions enabled" in titles
+    assert view.suppressed == 2                            # both instances counted
+
+
+def test_no_suppression_when_list_empty():
+    g = _graph_with([("192.0.2.10:80", "Missing HTTP security headers", Severity.LOW)])
+    view = build_view(g, min_severity="info", aggregate=True, suppress_titles=[])
+    titles = {a.title for aggs in view.by_validation.values() for a in aggs}
+    assert "Missing HTTP security headers" in titles
+
+
 def test_raising_floor_still_suppresses():
     g = _graph_with([
         ("192.0.2.10:80", "Missing HTTP security headers", Severity.LOW),

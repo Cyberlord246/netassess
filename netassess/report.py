@@ -50,8 +50,9 @@ class ReportGenerator:
 
         view = build_view(
             g,
-            min_severity=getattr(self.config, "report_min_severity", "medium"),
+            min_severity=getattr(self.config, "report_min_severity", "info"),
             aggregate=getattr(self.config, "report_aggregate", True),
+            suppress_titles=getattr(self.config, "report_suppress_titles", None),
         )
         by_val = view.by_validation
 
@@ -82,9 +83,9 @@ class ReportGenerator:
         w(self._prioritization())
 
         # findings by validation state (severity-filtered + aggregated)
-        note = (f"\n_Showing findings at severity **{view.threshold.value}** and "
-                f"above; {view.suppressed} lower-severity/informational finding(s) "
-                "suppressed for signal. Full detail is in report.json._\n"
+        note = (f"\n_{view.suppressed} low-signal finding(s) hidden from this report "
+                f"(suppressed titles, or below severity **{view.threshold.value}**). "
+                "Full detail is in report.json._\n"
                 if view.suppressed else "")
 
         w("\n## Confirmed Findings\n" + note)

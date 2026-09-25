@@ -63,15 +63,20 @@ class FindingsView:
     severity_counts: dict[str, int]  # counts of KEPT findings by severity
 
 
-def build_view(graph, min_severity: str = "medium",
-               aggregate: bool = True) -> FindingsView:
+def build_view(graph, min_severity: str = "info",
+               aggregate: bool = True,
+               suppress_titles: list[str] | None = None) -> FindingsView:
     threshold = severity_from_str(min_severity)
+    suppress = set(suppress_titles or [])
     groups: dict[tuple, AggFinding] = {}
     kept = 0
     suppressed = 0
     sev_counts: dict[str, int] = {}
 
     for _host, f in graph.all_findings():
+        if f.title in suppress:            # low-signal, hidden from the report
+            suppressed += 1
+            continue
         if not at_least(f.severity, threshold):
             suppressed += 1
             continue

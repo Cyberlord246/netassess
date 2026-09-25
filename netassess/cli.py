@@ -136,6 +136,8 @@ def _build_config(args) -> Config:
         cfg.report_min_severity = args.min_severity
     if getattr(args, "no_aggregate", False):
         cfg.report_aggregate = False
+    if getattr(args, "include_noise", False):
+        cfg.report_suppress_titles = []
     return cfg
 
 
@@ -452,6 +454,9 @@ def _add_scan_args(sp: argparse.ArgumentParser):
     sp.add_argument("--no-aggregate", dest="no_aggregate", action="store_true",
                     help="list findings per host instead of grouping the same "
                          "issue across hosts")
+    sp.add_argument("--include-noise", dest="include_noise", action="store_true",
+                    help="also report low-signal findings that are hidden by "
+                         "default (missing security headers, version disclosure)")
 
 
 def main(argv=None) -> int:

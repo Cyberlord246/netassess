@@ -83,6 +83,11 @@ class Config:
     html_report: bool = True          # also emit report.html
     report_min_severity: str = "info"  # show all severities (info+); raise with --min-severity
     report_aggregate: bool = True     # collapse same finding across hosts into one
+    # low-signal finding titles hidden from the human report (still in report.json)
+    report_suppress_titles: list[str] = field(default_factory=lambda: [
+        "Missing HTTP security headers",
+        "Software version disclosure via HTTP headers",
+    ])
 
     # --- ai ---------------------------------------------------------------
     ai_provider: str = "none"         # none | anthropic | ...
