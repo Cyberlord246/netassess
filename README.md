@@ -52,9 +52,15 @@ docker compose run --rm netassess network scan --targets targets.txt --nuclei
 
 Runs on **macOS, Linux/Ubuntu, and Windows** (anywhere Docker runs). The build
 selects native tool binaries for your architecture — **Intel/AMD (amd64) and
-Apple Silicon (arm64)** — so a plain `docker build` just works. If a tool has no
-binary for your arch it's skipped and netassess falls back to its built-in
-equivalent.
+Apple Silicon (arm64)** — so a plain `docker build` just works. Both arches are
+build-verified (arm64 via emulation).
+
+Per-arch tool availability:
+
+| Tool | amd64 | arm64 (Apple Silicon) |
+|---|---|---|
+| netassess, nmap, nuclei (+templates) | ✅ | ✅ |
+| feroxbuster | ✅ | ✅ *(if a release exists)* — currently **no upstream arm64-linux binary**, so it's skipped and netassess's built-in `--content-discovery` is used instead |
 
 ## Install (without Docker)
 
