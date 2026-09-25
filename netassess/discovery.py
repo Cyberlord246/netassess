@@ -84,7 +84,8 @@ class DiscoveryEngine:
                 host.status = HostStatus.UNRESPONSIVE
 
         host.discovery_method = method or "tcp-connect(no response)"
-        host.latency_ms = round(best_latency, 2) if best_latency else None
+        # note: 0.0 is a valid (sub-ms) latency, so test for None explicitly
+        host.latency_ms = round(best_latency, 2) if best_latency is not None else None
         return host
 
     def discover(self, ips: list[str],

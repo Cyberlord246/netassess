@@ -36,8 +36,15 @@ class Config:
     # --- performance / safety limits -------------------------------------
     concurrency: int = 50             # max simultaneous sockets
     rate: float = 200.0               # max new connections / second (token bucket)
-    timeout: float = 3.0              # per-connection timeout (s)
+    timeout: float = 3.0              # per-connection timeout ceiling (s)
     retries: int = 1                  # extra attempts on transient failure
+
+    # adaptive timeout: derive a tighter per-host timeout from the host's RTT
+    # (measured during discovery), so fast hosts don't wait the full ceiling on
+    # every filtered port. Bounded by [adaptive_floor, timeout].
+    adaptive_timeout: bool = True
+    adaptive_factor: float = 10.0     # effective timeout = rtt * factor
+    adaptive_floor: float = 0.3       # never go below this (s)
 
     # --- discovery --------------------------------------------------------
     discovery_ports: list[int] = field(default_factory=lambda: [443, 80, 22, 445, 3389])

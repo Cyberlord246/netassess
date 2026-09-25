@@ -90,6 +90,8 @@ def _build_config(args) -> Config:
         cfg.timeout = args.timeout
     if getattr(args, "retries", None) is not None:
         cfg.retries = args.retries
+    if getattr(args, "no_adaptive_timeout", False):
+        cfg.adaptive_timeout = False
     if getattr(args, "output", None):
         cfg.output_dir = args.output
     if getattr(args, "ai_provider", None):
@@ -409,8 +411,12 @@ def _add_scan_args(sp: argparse.ArgumentParser):
     sp.add_argument("--deep", action="store_true", help="deeper (still safe) probes")
     sp.add_argument("--concurrency", type=int)
     sp.add_argument("--rate", type=float, help="max new connections/sec")
-    sp.add_argument("--timeout", type=float)
+    sp.add_argument("--timeout", type=float, help="per-connection timeout ceiling (s)")
     sp.add_argument("--retries", type=int)
+    sp.add_argument("--no-adaptive-timeout", dest="no_adaptive_timeout",
+                    action="store_true",
+                    help="disable RTT-based per-host timeouts; use the full "
+                         "--timeout for every connection")
     sp.add_argument("--output", help="output directory")
     sp.add_argument("--ai-provider", dest="ai_provider",
                     choices=["none", "anthropic"], default="none")

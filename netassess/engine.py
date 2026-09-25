@@ -23,7 +23,7 @@ from .cve import CVEEngine
 from .discovery import DiscoveryEngine
 from .dns_recon import ReverseDNS
 from .models import HostStatus
-from .ports import PortScanner
+from .ports import PortScanner, effective_timeout
 from .roles import classify, detect_anomalies
 from .probers import build_generic, build_probes
 from .report import ReportGenerator
@@ -151,10 +151,21 @@ class AssessmentEngine:
             self._log("[ports] no live hosts to scan")
             return
         ports = self.config.effective_ports()
+        # per-host adaptive timeout from discovery RTT (fast hosts wait less)
+        host_timeouts = {
+            ip: effective_timeout(self.graph.get_or_create(ip).latency_ms, self.config)
+            for ip in targets
+        }
+        if self.config.adaptive_timeout:
+            sample = [t for t in host_timeouts.values()]
+            tightened = sum(1 for t in sample if t < self.config.timeout)
+            self._log(f"[ports] adaptive timeout active — {tightened}/{len(sample)} "
+                      f"host(s) using a tighter-than-{self.config.timeout}s timeout")
         self._log(f"[ports] scanning {len(targets)} host(s) × {len(ports)} port(s) "
                   f"via {self.scanner.backend} (concurrent)…")
         results = self.scanner.scan_hosts(targets, ports,
-                                          progress=self._progress("ports"))
+                                          progress=self._progress("ports"),
+                                          host_timeouts=host_timeouts)
         opened = 0
         for ip, found in results.items():
             host = self.graph.get_or_create(ip)

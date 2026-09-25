@@ -19,6 +19,20 @@ from .models import Confidence, Port, PortState, Service
 from .scope import ScopeEngine
 
 
+def effective_timeout(latency_ms, config: Config) -> float:
+    """Per-host connect timeout derived from the host's measured RTT.
+
+    Fast hosts get a much tighter timeout than the ceiling, so filtered ports
+    fail quickly instead of waiting the full `--timeout`. Bounded by
+    [adaptive_floor, timeout]. Falls back to the ceiling when adaptive timing is
+    off or no RTT is known.
+    """
+    if not getattr(config, "adaptive_timeout", False) or latency_ms is None:
+        return config.timeout
+    t = (latency_ms / 1000.0) * config.adaptive_factor
+    return max(config.adaptive_floor, min(t, config.timeout))
+
+
 # Ports where grabbing a banner by simply connecting is safe & useful.
 # For HTTP-like ports we send a minimal, well-formed HEAD-ish probe elsewhere.
 _BANNER_READ_PORTS = {21, 22, 25, 110, 143, 3306, 5432, 6379, 11211, 27017, 587, 465}
@@ -31,11 +45,12 @@ class PurePythonScanner:
         self.config = config
         self.scope = scope
 
-    def _connect_once(self, ip: str, port: int) -> tuple[PortState, float, str]:
+    def _connect_once(self, ip: str, port: int, timeout: Optional[float] = None
+                      ) -> tuple[PortState, float, str]:
         """Attempt a single TCP connect. Returns (state, latency_ms, banner)."""
         start = time.monotonic()
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(self.config.timeout)
+        sock.settimeout(timeout if timeout is not None else self.config.timeout)
         try:
             sock.connect((ip, port))
             latency = (time.monotonic() - start) * 1000.0
@@ -67,15 +82,17 @@ class PurePythonScanner:
         except OSError:
             return ""
 
-    def scan_port(self, ip: str, port: int) -> Optional[Port]:
-        """Scope-gated scan of one port with retries."""
+    def scan_port(self, ip: str, port: int, timeout: Optional[float] = None
+                  ) -> Optional[Port]:
+        """Scope-gated scan of one port with retries. `timeout` overrides the
+        per-connection timeout (used by adaptive per-host timing)."""
         attempts = 1 + max(0, self.config.retries)
         last_state = PortState.FILTERED
         for _ in range(attempts):
             with self.scope.slot(ip, port) as s:
                 if not s.allowed:
                     return None  # scope denied — never touched the network
-                state, latency, banner = self._connect_once(ip, port)
+                state, latency, banner = self._connect_once(ip, port, timeout)
             last_state = state
             if state == PortState.OPEN:
                 svc = Service(protocol="tcp", banner=banner)
@@ -136,7 +153,8 @@ class PortScanner:
         return self.pure.scan_host(ip, ports, progress)
 
     def scan_hosts(self, targets: list[str], ports: Optional[list[int]] = None,
-                   progress: Optional[Callable[[int, int], None]] = None
+                   progress: Optional[Callable[[int, int], None]] = None,
+                   host_timeouts: Optional[dict[str, float]] = None
                    ) -> dict[str, list[Port]]:
         """Scan many hosts concurrently, bounded by the global concurrency/rate
         budget (the scope engine's shared semaphore + token bucket cap total
@@ -183,8 +201,9 @@ class PortScanner:
             pairs = [(ip, p) for ip in targets for p in ports]
             total = len(pairs)
             done = 0
+            ht = host_timeouts or {}
             with ThreadPoolExecutor(max_workers=max(1, self.config.concurrency)) as pool:
-                futures = {pool.submit(self.pure.scan_port, ip, p): ip
+                futures = {pool.submit(self.pure.scan_port, ip, p, ht.get(ip)): ip
                            for ip, p in pairs}
                 for fut in as_completed(futures):
                     ip = futures[fut]
