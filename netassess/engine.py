@@ -122,14 +122,45 @@ class AssessmentEngine:
 
     # -- phases ----------------------------------------------------------- #
     def _phase_discovery(self, ips: list[str]):
-        self._log(f"[discovery] probing {len(ips)} host(s)…")
-        results = self.discovery.discover(ips, progress=self._progress("discovery"))
-        for host in results:
-            existing = self.graph.get_or_create(host.ip)
-            existing.status = host.status
-            existing.discovery_method = host.discovery_method
-            existing.latency_ms = host.latency_ms
-            existing.notes.extend(host.notes)
+        if self.config.skip_discovery:
+            for ip in ips:
+                h = self.graph.get_or_create(ip)
+                h.status = HostStatus.LIVE
+                h.discovery_method = "assumed (discovery skipped)"
+            self._log(f"[discovery] skipped — treating {len(ips)} host(s) as live")
+            return
+        mode = self.config.discovery_mode
+        use_nmap = (mode in ("auto", "nmap")) and self.nmap.available()
+        if mode == "nmap" and not self.nmap.available():
+            self._log("[discovery] nmap requested but not found — using TCP discovery")
+
+        remaining = ips
+        if use_nmap:
+            self._log(f"[discovery] nmap -sn host discovery on {len(ips)} host(s)…")
+            up, res = self.nmap.discover(ips)
+            if res.not_found:
+                self._log("[discovery] nmap unavailable — falling back to TCP")
+            else:
+                for ip in up:
+                    h = self.graph.get_or_create(ip)
+                    h.status = HostStatus.LIVE
+                    h.discovery_method = "nmap -sn"
+                self._log(f"[discovery] nmap reports {len(up)} host(s) up")
+                # 'nmap' mode = nmap only; 'auto' = TCP-probe the ones nmap
+                # didn't confirm, so filtered-but-TCP-reachable hosts aren't lost
+                remaining = [] if mode == "nmap" else [ip for ip in ips if ip not in up]
+
+        if remaining:
+            self._log(f"[discovery] TCP-probing {len(remaining)} host(s)…")
+            results = self.discovery.discover(remaining,
+                                              progress=self._progress("discovery"))
+            for host in results:
+                existing = self.graph.get_or_create(host.ip)
+                existing.status = host.status
+                existing.discovery_method = host.discovery_method
+                existing.latency_ms = host.latency_ms
+                existing.notes.extend(host.notes)
+
         live = len(self.graph.live_hosts())
         self._log(f"\n[discovery] {live} live host(s)")
 

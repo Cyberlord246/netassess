@@ -10,6 +10,8 @@ only already-authorized targets to nmap and use non-aggressive defaults.
 """
 from __future__ import annotations
 
+import os
+import tempfile
 import xml.etree.ElementTree as ET
 from typing import Optional
 
@@ -23,6 +25,46 @@ class NmapAdapter(ToolAdapter):
 
     def available(self) -> bool:
         return which("nmap") is not None
+
+    # -- host discovery (nmap -sn) --------------------------------------- #
+    def discover(self, targets: list[str], timeout: float = 300.0
+                 ) -> tuple[set[str], ProcResult]:
+        """Run `nmap -sn` (ping-scan / host discovery only) over the targets and
+        return the set of hosts nmap reports as up. Uses nmap's richer discovery
+        (ICMP / TCP SYN+ACK / ARP when privileged) instead of a single technique.
+        Caller must have already scope-authorized every target."""
+        if not self.available() or not targets:
+            return set(), ProcResult(False, None, "", "", not_found=True)
+        tf = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False,
+                                         encoding="utf-8")
+        try:
+            tf.write("\n".join(targets))
+            tf.close()
+            argv = ["nmap", "-sn", "-n", "-oX", "-", "-iL", tf.name]
+            res = run(argv, timeout=timeout)
+        finally:
+            try:
+                os.unlink(tf.name)
+            except OSError:
+                pass
+        up = self._parse_up(res.stdout) if res.stdout else set()
+        return up, res
+
+    def _parse_up(self, xml_text: str) -> set[str]:
+        up: set[str] = set()
+        try:
+            root = ET.fromstring(xml_text)
+        except ET.ParseError:
+            return up
+        for host in root.findall("host"):
+            st = host.find("status")
+            if st is None or st.get("state") != "up":
+                continue
+            for addr in host.findall("address"):
+                if addr.get("addrtype") == "ipv4":
+                    up.add(addr.get("addr", ""))
+        up.discard("")
+        return up
 
     def scan(self, ip: str, ports: list[int], timeout: float = 120.0,
              service_detection: str = "banner", min_rate: Optional[int] = None

@@ -49,6 +49,10 @@ class Config:
     # --- discovery --------------------------------------------------------
     discovery_ports: list[int] = field(default_factory=lambda: [443, 80, 22, 445, 3389])
     skip_discovery: bool = False      # treat all in-scope hosts as live
+    discovery_mode: str = "auto"      # auto | nmap | tcp
+    #  auto : nmap -sn if available (+ TCP fallback for the rest), else TCP
+    #  nmap : nmap -sn only
+    #  tcp  : built-in pure-Python TCP-connect discovery only
 
     # --- udp --------------------------------------------------------------
     udp_scan: bool = False            # scan common UDP ports (opt-in)

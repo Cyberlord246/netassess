@@ -92,6 +92,10 @@ def _build_config(args) -> Config:
         cfg.retries = args.retries
     if getattr(args, "no_adaptive_timeout", False):
         cfg.adaptive_timeout = False
+    if getattr(args, "discovery", None):
+        cfg.discovery_mode = args.discovery
+    if getattr(args, "skip_discovery", False):
+        cfg.skip_discovery = True
     if getattr(args, "output", None):
         cfg.output_dir = args.output
     if getattr(args, "ai_provider", None):
@@ -417,6 +421,12 @@ def _add_scan_args(sp: argparse.ArgumentParser):
                     action="store_true",
                     help="disable RTT-based per-host timeouts; use the full "
                          "--timeout for every connection")
+    sp.add_argument("--discovery", choices=["auto", "nmap", "tcp"],
+                    help="host discovery: auto (nmap -sn if available + TCP "
+                         "fallback), nmap (nmap -sn only), or tcp (built-in "
+                         "TCP-connect). Default auto.")
+    sp.add_argument("--skip-discovery", dest="skip_discovery", action="store_true",
+                    help="skip discovery; treat every in-scope host as live")
     sp.add_argument("--output", help="output directory")
     sp.add_argument("--ai-provider", dest="ai_provider",
                     choices=["none", "anthropic"], default="none")

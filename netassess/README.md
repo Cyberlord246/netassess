@@ -79,6 +79,8 @@ python -m netassess diff --old baseline/state.json --new latest/state.json \
 | `--targets` | file path, or comma list of IPs/CIDRs (required) |
 | `--exclude` | file/comma IPs/CIDRs to exclude (always wins) |
 | `--mode` | `deterministic` (default) · `ai` · `auto` |
+| `--discovery` | host discovery: `auto` (nmap `-sn` if available + TCP fallback), `nmap`, or `tcp` (built-in) |
+| `--skip-discovery` | treat every in-scope host as live (skip discovery) |
 | `--ports` | explicit set, e.g. `22,80,443` or `1-1024` (overrides the default) |
 | `--common-ports` | fast preset: 40 high-signal ports instead of top-1000 |
 | `--full-port-scan` | scan all 65,535 TCP ports |
