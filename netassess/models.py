@@ -177,6 +177,8 @@ class Finding:
     source: str = "netassess"       # detection source / adapter
     category: str = "general"
     ts: str = field(default_factory=iso)
+    kev: bool = False               # on CISA Known Exploited Vulnerabilities list
+    epss: Optional[float] = None    # FIRST EPSS exploitation probability (0..1)
 
     def to_dict(self) -> dict:
         d = asdict(self)

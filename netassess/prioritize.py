@@ -69,9 +69,17 @@ class PriorityEngine:
                                           ValidationState.POTENTIAL):
                         weight *= 0.7
                     score += weight
+                    # exploitation intelligence dominates ranking
+                    if getattr(f, "kev", False):
+                        score += 5.0
+                        reasons.append(f"ACTIVELY EXPLOITED (CISA KEV): {f.title}")
+                    elif getattr(f, "epss", None) and f.epss >= 0.5:
+                        score += 2.0
+                        reasons.append(f"high EPSS {f.epss:.0%}: {f.title}")
                     if SEVERITY_ORDER[f.severity] > SEVERITY_ORDER[top_sev]:
                         top_sev = f.severity
-                    if f.severity in (Severity.HIGH, Severity.CRITICAL):
+                    if f.severity in (Severity.HIGH, Severity.CRITICAL) \
+                            and not getattr(f, "kev", False):
                         reasons.append(f"{f.severity.value} finding: {f.title}")
 
                 # admin/auth surface hint from http titles

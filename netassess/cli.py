@@ -264,6 +264,16 @@ def cmd_cve_sync(args) -> int:
     return 0
 
 
+def cmd_kev_sync(args) -> int:
+    from .cve.kev import KEVSync, default_cache_path
+    out = args.output or default_cache_path()
+    print("Syncing CISA KEV + FIRST EPSS (talks to CISA/FIRST, not your targets).")
+    res = KEVSync().sync(out_path=out)
+    print(f"\nDone: {res['kev']} KEV CVE(s), {res['epss']} EPSS score(s) at {res['path']}")
+    print("Future scans flag actively-exploited CVEs automatically (offline).")
+    return 0 if (res["kev"] or res["epss"]) else 1
+
+
 def cmd_report(args) -> int:
     state_path = args.state
     if not os.path.isfile(state_path):
@@ -330,6 +340,14 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--products", help="comma list to limit (e.g. nginx,openssh); "
                                          "default = all fingerprinted products")
     sync.set_defaults(func=cmd_cve_sync)
+
+    # kev sync
+    kev = sub.add_parser("kev", help="exploitation-intel (CISA KEV + EPSS) utilities")
+    kevsub = kev.add_subparsers(dest="cmd", required=True)
+    ksync = kevsub.add_parser("sync", help="download CISA KEV + EPSS cache "
+                                           "(no target traffic)")
+    ksync.add_argument("--output", help="cache path (default ~/.netassess/kev.json)")
+    ksync.set_defaults(func=cmd_kev_sync)
 
     # report
     rep = sub.add_parser("report", help="regenerate a report from saved state")

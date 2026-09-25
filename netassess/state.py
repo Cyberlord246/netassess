@@ -162,7 +162,7 @@ def _finding_from_dict(d: dict) -> Finding:
         impact=d.get("impact", ""), remediation=d.get("remediation", ""),
         validation=ValidationState(d.get("validation", "OBSERVED")),
         source=d.get("source", "netassess"), category=d.get("category", "general"),
-        ts=d.get("ts", iso()),
+        ts=d.get("ts", iso()), kev=d.get("kev", False), epss=d.get("epss"),
     )
 
 

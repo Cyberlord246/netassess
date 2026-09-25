@@ -284,6 +284,22 @@ class AssessmentEngine:
                   f"{len(self.cve.db)} CVE(s) [{mode}{cache_note}]…")
         n = self.cve.assess(self.graph)
         self._log(f"[cve] {n} CVE lead(s) added (marked NEEDS_VALIDATION)")
+        self._enrich_kev()
+
+    def _enrich_kev(self):
+        from .cve.kev import KEVData, default_cache_path, enrich_graph
+        import os as _os
+        cache = self.config.kev_cache or default_cache_path()
+        if not _os.path.isfile(cache):
+            self._log("[kev] no KEV/EPSS cache — run `netassess kev sync` to flag "
+                      "actively-exploited CVEs")
+            return
+        data = KEVData.load(cache)
+        if not data.available:
+            return
+        counts = enrich_graph(self.graph, data)
+        self._log(f"[kev] {counts['kev']} finding(s) flagged actively-exploited "
+                  f"(CISA KEV), {counts['epss']} scored with EPSS")
 
     # -- report ----------------------------------------------------------- #
     def report(self) -> dict:

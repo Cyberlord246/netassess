@@ -356,6 +356,26 @@ version-range comparison (handles `2.4.49`, `9.3p2`, `1.0.1f`, etc.).
   > retries with backoff). For a reliable full sync, get a free key at
   > <https://nvd.nist.gov/developers/request-an-api-key> and `export NVD_API_KEY=…`.
 * Extend or override with your own file via `--cve-db file.json` (same schema).
+
+### Exploitation intelligence (CISA KEV + EPSS)
+
+`netassess kev sync` downloads the **CISA Known Exploited Vulnerabilities**
+catalog and **FIRST EPSS** scores (from CISA/FIRST, **not your targets**) into
+`~/.netassess/kev.json`. Scans then enrich CVE findings offline:
+
+- **KEV hit** → finding is flagged **"ACTIVELY EXPLOITED"**, severity floored to
+  **High** (or **Critical** if used in ransomware), and it jumps to the top of
+  prioritization.
+- **EPSS** → each CVE gets its exploitation-probability score; high EPSS boosts
+  priority.
+
+```bash
+netassess kev sync                       # ~1,700 KEV CVEs + ~380k EPSS scores
+netassess network scan --targets targets.txt
+```
+
+This is the difference between "here are 30 CVEs" and "**these 2 are being
+exploited right now — fix them first**." Zero target traffic.
 * **Opt-in live enrichment** — `--cve-online` queries the NVD 2.0 API (rate-limited,
   cached, best-effort; set `NVD_API_KEY` for a higher limit). This is the only
   component that reaches a third party, and it sends only product/version keywords.

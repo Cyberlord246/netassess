@@ -45,6 +45,8 @@ class AggFinding:
     assets: list[str] = field(default_factory=list)
     # asset -> short evidence, so per-host specifics aren't lost on aggregation
     evidence_by_asset: dict[str, str] = field(default_factory=dict)
+    kev: bool = False               # any merged instance is actively exploited
+    epss: float | None = None       # max EPSS across merged instances
 
     @property
     def count(self) -> int:
@@ -96,6 +98,11 @@ def build_view(graph, min_severity: str = "medium",
         # keep the strongest confidence seen across merged instances
         if CONFIDENCE_ORDER[f.confidence] > CONFIDENCE_ORDER[agg.confidence]:
             agg.confidence = f.confidence
+        if getattr(f, "kev", False):
+            agg.kev = True
+        fe = getattr(f, "epss", None)
+        if fe is not None and (agg.epss is None or fe > agg.epss):
+            agg.epss = fe
 
     # bucket by validation state, most-severe first within each bucket
     by_val: dict[ValidationState, list[AggFinding]] = {}
@@ -103,7 +110,9 @@ def build_view(graph, min_severity: str = "medium",
         agg.assets.sort(key=_asset_sort_key)
         by_val.setdefault(agg.validation, []).append(agg)
     for bucket in by_val.values():
-        bucket.sort(key=lambda a: (SEVERITY_ORDER[a.severity], a.count),
+        # actively-exploited (KEV) first, then severity, EPSS, host count
+        bucket.sort(key=lambda a: (a.kev, SEVERITY_ORDER[a.severity],
+                                   a.epss or 0.0, a.count),
                     reverse=True)
 
     return FindingsView(by_validation=by_val, kept=kept, suppressed=suppressed,

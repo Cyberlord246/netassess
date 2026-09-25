@@ -114,10 +114,15 @@ class HTMLReport:
             ("HTTP services", len(g.all_http_services())),
             ("Findings", view.kept),
         ]
+        kev = sum(1 for aggs in view.by_validation.values() for a in aggs if a.kev)
         s = ["<div class='grid'>"]
         for label, n in cells:
             s.append(f"<div class='stat'><div class='n'>{n}</div>"
                      f"<div class='l'>{label}</div></div>")
+        if kev:
+            s.append(f"<div class='stat' style='border-color:#b3005e'>"
+                     f"<div class='n' style='color:#b3005e'>{kev}</div>"
+                     f"<div class='l'>Actively exploited (KEV)</div></div>")
         for sev in ("critical", "high", "medium", "low", "info"):
             n = sev_counts.get(sev, 0)
             if n:
@@ -190,11 +195,16 @@ class HTMLReport:
         suffix = f" &times;{a.count} hosts" if a.count > 1 else ""
         assets_html = ", ".join(f"<span class='mono'>{_esc(x)}</span>"
                                 for x in a.assets)
+        kev_badge = ("<span class='badge' style='background:#b3005e'>"
+                     "ACTIVELY EXPLOITED · CISA KEV</span> ") if a.kev else ""
+        epss_pill = (f"<span class='pill'>EPSS {a.epss:.0%}</span>"
+                     if a.epss is not None else "")
         return (
             f"<div class='card' style='border-left-color:{color}'>"
-            f"<h3>{_badge(a.severity.value)} {_esc(a.title)}{suffix}</h3>"
+            f"<h3>{kev_badge}{_badge(a.severity.value)} {_esc(a.title)}{suffix}</h3>"
             f"<div class='kv'>"
             f"<span class='pill'>confidence: {_esc(a.confidence.value)}</span>"
+            f"{epss_pill}"
             f"<span class='pill'>validation: {_esc(a.validation.value)}</span>"
             f"<span class='pill'>category: {_esc(a.category)}</span>"
             f"<span class='pill'>source: {_esc(a.source)}</span></div>"

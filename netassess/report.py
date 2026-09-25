@@ -128,12 +128,21 @@ class ReportGenerator:
             f"Medium: {sc.get('medium',0)} · "
             f"Low: {sc.get('low',0)} · "
             f"Info: {sc.get('info',0)}",
+            self._kev_summary_line(view),
             "\nThis report inventories the externally reachable attack surface of "
             "the authorized targets and highlights safe, non-destructively "
             "detected security issues. Version-derived issues are marked for "
             "validation and should be confirmed before remediation prioritisation.",
         ]
         return "\n".join(lines)
+
+    def _kev_summary_line(self, view) -> str:
+        kev = sum(1 for aggs in view.by_validation.values()
+                  for a in aggs if a.kev)
+        if kev:
+            return (f"- **(!) Actively exploited (CISA KEV): {kev}** - prioritise "
+                    "these first")
+        return "- Actively exploited (CISA KEV): 0"
 
     def _attack_surface_summary(self) -> str:
         g = self.graph
@@ -324,10 +333,12 @@ class ReportGenerator:
         out = []
         for a in aggs:
             suffix = f" (×{a.count} hosts)" if a.count > 1 else ""
-            out.append(f"\n### {a.title}{suffix}")
+            flag = " [ACTIVELY EXPLOITED - CISA KEV]" if a.kev else ""
+            out.append(f"\n### {a.title}{suffix}{flag}")
+            epss_str = f"  |  **EPSS:** {a.epss:.0%}" if a.epss is not None else ""
             out.append(f"- **Severity:** {a.severity.value}  |  "
                        f"**Confidence:** {a.confidence.value}  |  "
-                       f"**Validation:** {a.validation.value}")
+                       f"**Validation:** {a.validation.value}{epss_str}")
             out.append(f"- **Category:** {a.category}  |  "
                        f"**Detection source:** {a.source}")
             out.append(f"- **Affected assets ({a.count}):** "
