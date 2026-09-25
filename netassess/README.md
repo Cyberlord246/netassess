@@ -84,6 +84,7 @@ python -m netassess diff --old baseline/state.json --new latest/state.json \
 | `--full-port-scan` | scan all 65,535 TCP ports |
 | `--udp` | also scan common UDP ports with protocol-aware SNMP/NTP/DNS probes |
 | `--udp-ports` | UDP ports to scan, e.g. `53,123,161` (default: common set) |
+| `--vhosts` | probe TLS cert SAN/CN hostnames as virtual hosts on the same in-scope IP |
 | `--deep` | deeper service detection (still non-destructive) |
 | `--concurrency` / `--rate` / `--timeout` / `--retries` | performance & safety limits |
 | `--content-discovery` | enumerate common web paths (admin/login/api/.env…) on HTTP services |
@@ -200,6 +201,23 @@ anonymous simple bind + RootDSE query that flags anonymous-bind exposure and
 **detects Active Directory Domain Controllers** from their naming contexts —
 all read-only (no credentials, no writes). Everything above is scope-gated and
 non-destructive.
+
+## Virtual-host discovery (`--vhosts`)
+
+One IP often serves several web apps, each answering only to the right `Host`
+header — an IP-only scan sees just the default one. With `--vhosts`, netassess
+takes the hostnames the server itself presents in its **TLS certificate** (SAN +
+CN, already collected during TLS probing) and re-requests the **same in-scope
+IP:port** with each as the `Host` header. Any that return a *different*
+application than the default response are reported as distinct virtual hosts.
+
+```bash
+python -m netassess network scan --targets targets.txt --vhosts
+```
+
+**Scope-safe by design:** it never scans a new IP and needs no external OSINT —
+it only varies the `Host` header against IPs already authorized and open, using
+certificate data you already have. GET-only, scope-gated, non-destructive.
 
 ## Content discovery (web path enumeration)
 

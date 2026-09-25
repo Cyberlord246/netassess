@@ -30,6 +30,7 @@ from .scope import ScopeEngine
 from .services import identify
 from .state import AssetGraph
 from .udp import UDPScanner
+from .vhost import VhostProber
 from .vuln import VulnAssessmentEngine
 
 
@@ -50,6 +51,7 @@ class AssessmentEngine:
         self.content = ContentDiscovery(config, self.scope) if config.content_discovery else None
         self.ferox = self._build_ferox(config)
         self.udp = UDPScanner(config, self.scope) if config.udp_scan else None
+        self.vhost = VhostProber(config, self.scope) if config.vhost_probe else None
         self.orch = Orchestrator(config)
         self._log = log or (lambda *a, **k: None)
 
@@ -95,6 +97,8 @@ class AssessmentEngine:
         self._phase_probe()
         self._save()
         self._phase_content()
+        self._save()
+        self._phase_vhost()
         self._save()
         self._phase_udp()
         self._save()
@@ -241,6 +245,30 @@ class AssessmentEngine:
             # shouldn't happen (we checked available()), but be safe
             return self.content.scan_service(host, svc)
         return findings
+
+    def _phase_vhost(self):
+        if self.vhost is None:
+            return
+        # snapshot services first: probing appends new vhost entries
+        services = list(self.graph.all_http_services())
+        # only TLS services carry SANs worth probing
+        services = [(h, s) for h, s in services if s.scheme == "https" or s.tls]
+        if not services:
+            self._log("[vhost] no TLS web services to derive SANs from")
+            return
+        self._log(f"[vhost] probing TLS SAN/CN hostnames across "
+                  f"{len(services)} service(s)…")
+        added = 0
+        for host, svc in services:
+            try:
+                for f in self.vhost.probe_service(host, svc):
+                    before = len(host.findings)
+                    host.add_finding(f)
+                    if len(host.findings) > before:
+                        added += 1
+            except Exception as exc:
+                host.notes.append(f"vhost probe error on {svc.port}: {exc}")
+        self._log(f"[vhost] {added} distinct virtual host(s) discovered")
 
     def _phase_udp(self):
         if self.udp is None:

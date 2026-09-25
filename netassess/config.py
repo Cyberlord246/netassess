@@ -71,6 +71,9 @@ class Config:
     content_extensions: str = ""      # e.g. "php,bak,zip,sql" (feroxbuster -x)
     content_thorough: bool = False    # feroxbuster: collect extensions + backups
 
+    # --- virtual-host probing ---------------------------------------------
+    vhost_probe: bool = False          # probe TLS SAN/CN hostnames as vhosts (in-scope)
+
     # --- report -----------------------------------------------------------
     html_report: bool = True          # also emit report.html
     report_min_severity: str = "medium"  # suppress findings below this in reports

@@ -105,6 +105,8 @@ def _build_config(args) -> Config:
     udp_ports = _parse_ports(getattr(args, "udp_ports", None))
     if udp_ports:
         cfg.udp_ports = udp_ports
+    if getattr(args, "vhosts", False):
+        cfg.vhost_probe = True
     if getattr(args, "content_discovery", False):
         cfg.content_discovery = True
     if getattr(args, "wordlist", None):
@@ -174,6 +176,7 @@ def cmd_scan(args) -> int:
         print(f" udp         : on ({len(cfg.udp_ports)} ports; SNMP/NTP/DNS probes)")
     else:
         print(f" udp         : off")
+    print(f" vhosts      : {'on (TLS SAN/CN vhost probing)' if cfg.vhost_probe else 'off'}")
     print("-" * 60)
 
     engine = AssessmentEngine(cfg, log=_logger(True))
@@ -374,6 +377,9 @@ def _add_scan_args(sp: argparse.ArgumentParser):
                          "with protocol-aware probes")
     sp.add_argument("--udp-ports", dest="udp_ports",
                     help="UDP ports to scan, e.g. 53,123,161 (default: common set)")
+    sp.add_argument("--vhosts", action="store_true",
+                    help="probe TLS certificate SAN/CN hostnames as virtual hosts "
+                         "on the same in-scope IP (finds apps an IP-only scan misses)")
     sp.add_argument("--deep", action="store_true", help="deeper (still safe) probes")
     sp.add_argument("--concurrency", type=int)
     sp.add_argument("--rate", type=float, help="max new connections/sec")
