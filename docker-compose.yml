@@ -1,0 +1,20 @@
+# Convenience wrapper so caches/templates persist across runs.
+#
+#   docker compose build
+#   docker compose run --rm netassess network scan --targets targets.txt --nuclei
+#
+# targets.txt and reports live in the current directory (mounted at /work).
+# NVD/KEV caches + nuclei templates persist in the named volume.
+services:
+  netassess:
+    build: .
+    image: netassess
+    volumes:
+      - ./:/work
+      - netassess-data:/root/.netassess
+    # pass NVD_API_KEY through for faster `cve sync` if you have one
+    environment:
+      - NVD_API_KEY=${NVD_API_KEY:-}
+
+volumes:
+  netassess-data:

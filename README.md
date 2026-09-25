@@ -21,7 +21,39 @@ back to built-in pure-Python equivalents.
 > permission to test. A mandatory scope engine gates every network operation and
 > never auto-adds discovered hosts, but it cannot grant authorization you lack.
 
-## Install
+## Docker (zero host installs — everything bundled)
+
+The image bundles netassess **plus `nmap`, `nuclei`, and `feroxbuster`**, with
+nuclei templates baked in. You install nothing but Docker.
+
+```bash
+# build once
+docker build -t netassess .
+
+# run — targets.txt and reports live in the current directory (mounted at /work)
+docker run --rm -v "$PWD:/work" netassess network scan --targets targets.txt --nuclei
+```
+
+Persist CVE/KEV caches (and templates) across runs with a named volume, then
+populate them once:
+
+```bash
+docker run --rm -v "$PWD:/work" -v netassess-data:/root/.netassess netassess cve sync
+docker run --rm -v "$PWD:/work" -v netassess-data:/root/.netassess netassess kev sync
+docker run --rm -v "$PWD:/work" -v netassess-data:/root/.netassess netassess network scan --targets targets.txt
+```
+
+Or via Compose (handles the volume for you):
+
+```bash
+docker compose build
+docker compose run --rm netassess network scan --targets targets.txt --nuclei
+```
+
+> Tool binaries are fetched for **linux/amd64**. On Apple Silicon build with
+> `docker build --platform linux/amd64 -t netassess .`.
+
+## Install (without Docker)
 
 Install straight from GitHub (gives you a `netassess` command anywhere):
 

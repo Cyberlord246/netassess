@@ -1,0 +1,29 @@
+# keep the build context small & clean
+.git
+.github
+**/__pycache__
+*.py[cod]
+*.egg-info
+build/
+dist/
+.venv/
+venv/
+
+# unrelated reference material living in this folder
+*.pdf
+*.html
+SQLMap*/
+nmap-*.html
+*.zip
+
+# assessment output / caches
+*-out/
+netassess-out/
+*.tmp
+report.*
+state.json
+diff.*
+
+# docs/scripts not needed at runtime
+sync.ps1
+sync.sh
