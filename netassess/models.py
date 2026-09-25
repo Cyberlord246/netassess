@@ -194,6 +194,7 @@ class Host:
     discovery_method: str = ""
     latency_ms: Optional[float] = None
     ports: dict[int, Port] = field(default_factory=dict)
+    udp_ports: dict[int, Port] = field(default_factory=dict)
     http_services: list[HTTPService] = field(default_factory=list)
     findings: list[Finding] = field(default_factory=list)
     tls: dict[int, TLSInfo] = field(default_factory=dict)
@@ -223,6 +224,7 @@ class Host:
             "discovery_method": self.discovery_method,
             "latency_ms": self.latency_ms,
             "ports": {str(k): v.to_dict() for k, v in self.ports.items()},
+            "udp_ports": {str(k): v.to_dict() for k, v in self.udp_ports.items()},
             "http_services": [h.to_dict() for h in self.http_services],
             "findings": [f.to_dict() for f in self.findings],
             "tls": {str(k): v.to_dict() for k, v in self.tls.items()},

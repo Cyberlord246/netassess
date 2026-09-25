@@ -100,6 +100,11 @@ def _build_config(args) -> Config:
         cfg.cve_online = True
     if getattr(args, "cve_db", None):
         cfg.cve_db = args.cve_db
+    if getattr(args, "udp", False):
+        cfg.udp_scan = True
+    udp_ports = _parse_ports(getattr(args, "udp_ports", None))
+    if udp_ports:
+        cfg.udp_ports = udp_ports
     if getattr(args, "content_discovery", False):
         cfg.content_discovery = True
     if getattr(args, "wordlist", None):
@@ -165,6 +170,10 @@ def cmd_scan(args) -> int:
         print(f" content     : on via {backend}")
     else:
         print(f" content     : off")
+    if cfg.udp_scan:
+        print(f" udp         : on ({len(cfg.udp_ports)} ports; SNMP/NTP/DNS probes)")
+    else:
+        print(f" udp         : off")
     print("-" * 60)
 
     engine = AssessmentEngine(cfg, log=_logger(True))
@@ -342,6 +351,11 @@ def _add_scan_args(sp: argparse.ArgumentParser):
                     help="fast preset: 40 high-signal ports instead of top-1000")
     sp.add_argument("--full-port-scan", action="store_true", dest="full_port_scan",
                     help="scan all 65535 TCP ports")
+    sp.add_argument("--udp", action="store_true",
+                    help="also scan common UDP ports (DNS/SNMP/NTP/NetBIOS/…) "
+                         "with protocol-aware probes")
+    sp.add_argument("--udp-ports", dest="udp_ports",
+                    help="UDP ports to scan, e.g. 53,123,161 (default: common set)")
     sp.add_argument("--deep", action="store_true", help="deeper (still safe) probes")
     sp.add_argument("--concurrency", type=int)
     sp.add_argument("--rate", type=float, help="max new connections/sec")

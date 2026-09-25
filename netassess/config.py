@@ -43,6 +43,11 @@ class Config:
     discovery_ports: list[int] = field(default_factory=lambda: [443, 80, 22, 445, 3389])
     skip_discovery: bool = False      # treat all in-scope hosts as live
 
+    # --- udp --------------------------------------------------------------
+    udp_scan: bool = False            # scan common UDP ports (opt-in)
+    udp_ports: list[int] = field(
+        default_factory=lambda: [53, 123, 161, 137, 500, 1900, 5353, 69, 111, 623])
+
     # --- policy: forbidden ports (never touched even if requested) --------
     forbidden_ports: list[int] = field(default_factory=list)
 

@@ -184,6 +184,13 @@ class ReportGenerator:
                 extra = f" — {svc.product} {svc.version}".rstrip() if svc.product else ""
                 lines.append(f"- `{p.number}/{p.protocol}` → **{svc.name}**"
                              f"{extra}  _(confidence: {svc.confidence.value})_")
+            for p in sorted(h.udp_ports.values(), key=lambda x: x.number):
+                if p.state.value not in ("open", "open|filtered"):
+                    continue
+                svc = p.service
+                extra = f" — {svc.product}" if svc.product else ""
+                lines.append(f"- `{p.number}/udp` → **{svc.name}**{extra}  "
+                             f"_({p.state.value})_")
         if len(lines) == 1:
             lines.append("_No open ports discovered._")
         return "\n".join(lines)

@@ -82,6 +82,8 @@ python -m netassess diff --old baseline/state.json --new latest/state.json \
 | `--ports` | explicit set, e.g. `22,80,443` or `1-1024` (overrides the default) |
 | `--common-ports` | fast preset: 40 high-signal ports instead of top-1000 |
 | `--full-port-scan` | scan all 65,535 TCP ports |
+| `--udp` | also scan common UDP ports with protocol-aware SNMP/NTP/DNS probes |
+| `--udp-ports` | UDP ports to scan, e.g. `53,123,161` (default: common set) |
 | `--deep` | deeper service detection (still non-destructive) |
 | `--concurrency` / `--rate` / `--timeout` / `--retries` | performance & safety limits |
 | `--content-discovery` | enumerate common web paths (admin/login/api/.env…) on HTTP services |
@@ -174,6 +176,30 @@ without any external scanner installed.
 * `report.html` — self-contained HTML report (inline CSS, dark/light, severity-colored finding cards). No external assets or JS deps.
 * `report.json` — machine-readable export (scope, config, full graph, priorities).
 * `state.json` — the persistent asset graph (resume / diff / re-report).
+
+## UDP scanning & service probes
+
+With `--udp`, netassess scans common UDP ports using **protocol-aware payloads**
+(a blind UDP packet rarely gets a reply, so it sends a real DNS query, SNMP GET,
+NTP request, etc.) and classifies each as open / open|filtered / closed. It then
+runs read-only analysis on what answers:
+
+- **SNMP (161)** — tries default community strings (`public`/`private`) with a
+  `sysDescr` GET; a reply is flagged as information disclosure (high).
+- **NTP (123)** — reads version/stratum and detects **mode-7 `monlist`**
+  (CVE-2013-5211 amplification).
+- **DNS/NetBIOS/SSDP/mDNS/…** — identified by their responses.
+
+```bash
+python -m netassess network scan --targets targets.txt --udp
+python -m netassess network scan --targets targets.txt --udp --udp-ports 53,123,161
+```
+
+netassess also has an **LDAP probe** (TCP 389/636, runs automatically): an
+anonymous simple bind + RootDSE query that flags anonymous-bind exposure and
+**detects Active Directory Domain Controllers** from their naming contexts —
+all read-only (no credentials, no writes). Everything above is scope-gated and
+non-destructive.
 
 ## Content discovery (web path enumeration)
 

@@ -29,6 +29,7 @@ from .report import ReportGenerator
 from .scope import ScopeEngine
 from .services import identify
 from .state import AssetGraph
+from .udp import UDPScanner
 from .vuln import VulnAssessmentEngine
 
 
@@ -48,6 +49,7 @@ class AssessmentEngine:
         self.cve = self._build_cve_engine(config)
         self.content = ContentDiscovery(config, self.scope) if config.content_discovery else None
         self.ferox = self._build_ferox(config)
+        self.udp = UDPScanner(config, self.scope) if config.udp_scan else None
         self.orch = Orchestrator(config)
         self._log = log or (lambda *a, **k: None)
 
@@ -93,6 +95,8 @@ class AssessmentEngine:
         self._phase_probe()
         self._save()
         self._phase_content()
+        self._save()
+        self._phase_udp()
         self._save()
         self._phase_vuln()
         self._save()
@@ -237,6 +241,31 @@ class AssessmentEngine:
             # shouldn't happen (we checked available()), but be safe
             return self.content.scan_service(host, svc)
         return findings
+
+    def _phase_udp(self):
+        if self.udp is None:
+            return
+        targets = [h.ip for h in self.graph.hosts.values()
+                   if h.status in (HostStatus.LIVE, HostStatus.FILTERED)]
+        if not targets:
+            return
+        ports = self.config.udp_ports
+        self._log(f"[udp] scanning {len(ports)} UDP port(s) on {len(targets)} host(s)…")
+        open_count = 0
+        findings = 0
+        for ip in targets:
+            results = self.udp.scan_host(ip, ports)
+            host = self.graph.get_or_create(ip)
+            for p in results:
+                host.udp_ports[p.number] = p
+                if p.state.value == "open":
+                    open_count += 1
+                for f in self.udp.analyze(ip, p):
+                    before = len(host.findings)
+                    host.add_finding(f)
+                    if len(host.findings) > before:
+                        findings += 1
+        self._log(f"[udp] {open_count} open UDP port(s), {findings} finding(s) added")
 
     def _phase_vuln(self):
         self._log("[vuln] running safe vulnerability heuristics…")

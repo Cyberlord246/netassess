@@ -11,13 +11,15 @@ from ..scope import ScopeEngine
 from .base import ProbeResult, ServiceProbe
 from .http_probe import HTTPProbe
 from .tls_probe import TLSProbe
+from .ldap_probe import LDAPProbe
 from .service_probes import (
     DNSProbe, DatabaseProbe, GenericProbe, SMBProbe, SMTPProbe, SSHProbe,
 )
 
 # Order matters: specific probes first, generic last.
 SPECIFIC_PROBE_CLASSES = [
-    HTTPProbe, TLSProbe, SSHProbe, SMTPProbe, DNSProbe, SMBProbe, DatabaseProbe,
+    HTTPProbe, TLSProbe, SSHProbe, SMTPProbe, DNSProbe, SMBProbe, LDAPProbe,
+    DatabaseProbe,
 ]
 
 
@@ -32,5 +34,5 @@ def build_generic(config: Config, scope: ScopeEngine) -> ServiceProbe:
 __all__ = [
     "ProbeResult", "ServiceProbe", "build_probes", "build_generic",
     "HTTPProbe", "TLSProbe", "SSHProbe", "SMTPProbe", "DNSProbe", "SMBProbe",
-    "DatabaseProbe", "GenericProbe",
+    "LDAPProbe", "DatabaseProbe", "GenericProbe",
 ]
