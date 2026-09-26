@@ -12,15 +12,19 @@
 # plain `docker build` produces a native image on both Intel/AMD and Apple
 # Silicon. If a tool has no binary for the arch, it's skipped and netassess uses
 # its built-in fallback.
-FROM python:3.12-slim
+#
+# Pinned to Debian 12 (bookworm) — the plain `python:3.12-slim` tag now tracks
+# Debian 13 (trixie), whose apt mirrors have been returning 404s/timeouts during
+# the release transition. bookworm is stable with reliable mirrors.
+FROM python:3.12-slim-bookworm
 
 LABEL org.opencontainers.image.title="netassess" \
       org.opencontainers.image.source="https://github.com/Cyberlord246/netassess" \
       org.opencontainers.image.description="Authorized, safe network attack-surface assessment platform"
 
 # --- system tools ---------------------------------------------------------
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
+RUN apt-get -o Acquire::Retries=3 update \
+ && apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
       nmap ca-certificates curl unzip tar \
  && rm -rf /var/lib/apt/lists/*
 
