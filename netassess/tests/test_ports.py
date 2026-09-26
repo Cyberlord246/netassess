@@ -57,6 +57,17 @@ def test_scan_hosts_empty_when_no_ports():
     assert s.scan_hosts(["192.0.2.10"], ports=[]) == {"192.0.2.10": []}
 
 
+def test_default_ports_cover_every_prober_port():
+    # regression: ports with dedicated probers (Redis/Mongo/Memcached/rsync/...)
+    # must be in the default scan set even if outside Nmap's top-1000.
+    from ..config import Config, PROBER_PORTS
+    default = set(Config().effective_ports())
+    missing = PROBER_PORTS - default
+    assert not missing, f"default scan missing prober ports: {sorted(missing)}"
+    for critical in (6379, 27017, 11211, 873):     # not in nmap top-1000
+        assert critical in default
+
+
 # --- adaptive timeout ------------------------------------------------------ #
 def test_effective_timeout_fast_host_tightens():
     cfg = Config(timeout=3.0, adaptive_timeout=True, adaptive_factor=10, adaptive_floor=0.3)

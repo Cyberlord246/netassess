@@ -12,10 +12,21 @@ from typing import Optional
 
 from .data_ports import COMMON_40, TOP_1000_TCP
 
-# The default scan set is now the canonical Nmap top-1000 TCP ports (good
-# coverage without needing nmap installed). COMMON_40 remains available as a
-# fast, high-signal preset via --common-ports.
-DEFAULT_PORTS = list(TOP_1000_TCP)
+# Ports that a dedicated prober / high-value check exists for — these MUST always
+# be in the default scan set, even if they fall outside Nmap's top-1000 (e.g.
+# Redis 6379, MongoDB 27017, Memcached 11211 are not in the top-1000 but the tool
+# has unauthenticated-exposure checks for them).
+PROBER_PORTS = {
+    21, 22, 23, 25, 53, 80, 110, 111, 135, 139, 143, 161, 389, 443, 445, 465,
+    587, 636, 873, 993, 995, 1433, 1521, 2049, 2375, 2376, 3306, 3389, 5432,
+    5900, 5901, 5902, 5903, 5985, 5986, 6379, 8000, 8080, 8443, 8888, 9200,
+    9300, 11211, 27017,
+}
+
+# Default scan set = Nmap top-1000 UNION every prober-relevant port, so the tool
+# never misses a service it can actually assess. COMMON_40 stays as the fast
+# --common-ports preset.
+DEFAULT_PORTS = sorted(set(TOP_1000_TCP) | set(COMMON_40) | PROBER_PORTS)
 COMMON_PORTS = list(COMMON_40)
 
 
