@@ -106,6 +106,8 @@ def _build_config(args) -> Config:
         cfg.cve_online = True
     if getattr(args, "cve_db", None):
         cfg.cve_db = args.cve_db
+    if getattr(args, "smtp_relay_test", False):
+        cfg.smtp_relay_test = True
     if getattr(args, "udp", False):
         cfg.udp_scan = True
     udp_ports = _parse_ports(getattr(args, "udp_ports", None))
@@ -395,6 +397,9 @@ def _add_scan_args(sp: argparse.ArgumentParser):
                     help="fast preset: 40 high-signal ports instead of top-1000")
     sp.add_argument("--full-port-scan", action="store_true", dest="full_port_scan",
                     help="scan all 65535 TCP ports")
+    sp.add_argument("--smtp-relay-test", dest="smtp_relay_test", action="store_true",
+                    help="test SMTP servers for open relay (non-destructive: aborts "
+                         "the transaction before DATA, so no mail is sent)")
     sp.add_argument("--udp", action="store_true",
                     help="also scan common UDP ports (DNS/SNMP/NTP/NetBIOS/…) "
                          "with protocol-aware probes")

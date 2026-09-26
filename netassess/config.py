@@ -65,6 +65,9 @@ class Config:
     #  nmap : nmap -sn only
     #  tcp  : built-in pure-Python TCP-connect discovery only
 
+    # --- smtp -------------------------------------------------------------
+    smtp_relay_test: bool = False     # test SMTP open relay (non-destructive; aborts before DATA)
+
     # --- udp --------------------------------------------------------------
     udp_scan: bool = False            # scan common UDP ports (opt-in)
     udp_ports: list[int] = field(

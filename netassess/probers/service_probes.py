@@ -101,7 +101,75 @@ class SMTPProbe(ServiceProbe):
                 remediation="Enable STARTTLS (or implicit TLS on 465) for the MTA.",
                 validation=ValidationState.POTENTIAL, source="smtp-probe", category="crypto",
             ))
+
+        # optional, opt-in open-relay test (non-destructive: aborts before DATA)
+        if getattr(self.config, "smtp_relay_test", False) and port.number in (25, 587):
+            relay = self._relay_test(host.ip, port.number)
+            info["relay_test"] = relay
+            if relay.get("open_relay"):
+                findings.append(Finding(
+                    title="SMTP open relay", asset=f"{host.ip}:{port.number}",
+                    evidence=relay.get("evidence", ""),
+                    description="The MTA accepted a message from an external sender to "
+                                "an external recipient without authentication "
+                                "(relay transaction was aborted before DATA — no mail sent).",
+                    why_it_matters="Open relays are abused to send spam/phishing, get the "
+                                   "server blacklisted, and can spoof internal mail.",
+                    severity=Severity.HIGH, confidence=Confidence.HIGH,
+                    impact="Third parties can relay arbitrary mail through this server.",
+                    remediation="Restrict relaying to authenticated users / trusted "
+                                "networks only; deny external->external relay.",
+                    validation=ValidationState.CONFIRMED, source="smtp-probe",
+                    category="mail-relay",
+                ))
         return ProbeResult(data={"smtp": info}, findings=findings)
+
+    def _relay_test(self, ip: str, port: int) -> dict:
+        """Non-destructive open-relay check: offer an external sender+recipient and
+        read whether RCPT is accepted, then RSET/QUIT. DATA is never sent, so no
+        message is ever transmitted even if the server would accept it."""
+        with self.scope.slot(ip, port) as s:
+            if not s.allowed:
+                return {"open_relay": False, "evidence": "scope denied"}
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(self.config.timeout)
+            try:
+                sock.connect((ip, port))
+                self._readline(sock)                       # 220 greeting
+                self._cmd(sock, b"EHLO netassess.local")
+                mail = self._cmd(sock, b"MAIL FROM:<relaytest@example.com>")
+                rcpt = self._cmd(sock, b"RCPT TO:<relaytest@example.org>")
+                self._cmd(sock, b"RSET")                   # abort the transaction
+                self._cmd(sock, b"QUIT")
+                code = rcpt[:3]
+                allowed = code in (b"250", b"251")
+                return {
+                    "open_relay": allowed,
+                    "mail_from_response": mail.decode("latin-1", "replace").strip()[:120],
+                    "rcpt_to_response": rcpt.decode("latin-1", "replace").strip()[:120],
+                    "evidence": (f"RCPT TO external recipient accepted: "
+                                 f"{rcpt.decode('latin-1','replace').strip()[:120]}"
+                                 if allowed else
+                                 f"relay denied: {rcpt.decode('latin-1','replace').strip()[:80]}"),
+                }
+            except OSError as exc:
+                return {"open_relay": False, "evidence": f"error: {exc}"}
+            finally:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+
+    @staticmethod
+    def _readline(sock) -> bytes:
+        try:
+            return sock.recv(512)
+        except OSError:
+            return b""
+
+    def _cmd(self, sock, line: bytes) -> bytes:
+        sock.sendall(line + b"\r\n")
+        return self._readline(sock)
 
 
 class DNSProbe(ServiceProbe):
