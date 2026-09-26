@@ -45,5 +45,3 @@ Thumbs.db
 # archives
 *.zip
 
-# lab scan outputs
-lab/out/

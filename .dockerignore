@@ -28,5 +28,3 @@ diff.*
 sync.ps1
 sync.sh
 
-# test lab (not needed in the image)
-lab/
