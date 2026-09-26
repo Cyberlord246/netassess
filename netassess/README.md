@@ -7,7 +7,7 @@ services/versions → protocol probes → HTTP/TLS analysis → technology
 identification → safe vulnerability heuristics → CVE correlation → correlation →
 prioritization → a comprehensive report (Markdown + JSON + HTML).
 
-It runs with **zero external dependencies** (Python 3.10+ stdlib only). If
+It runs with **zero external dependencies** (Python 3.8+ stdlib only). If
 `nmap` is on the PATH it is used automatically for richer service/version
 detection; otherwise a pure-Python TCP connect scanner is used.
 

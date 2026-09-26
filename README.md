@@ -13,7 +13,7 @@ HTTP/TLS analysis → technology detection → safe vuln heuristics → CVE corr
 content discovery → correlation → prioritization → report (MD / HTML / JSON)
 ```
 
-Runs on the **Python 3.10+ standard library alone** (no required dependencies).
+Runs on the **Python 3.8+ standard library alone** (no required dependencies).
 Uses `nmap` and `feroxbuster` automatically **if installed**, otherwise falls
 back to built-in pure-Python equivalents.
 
