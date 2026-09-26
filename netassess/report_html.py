@@ -93,6 +93,7 @@ class HTMLReport:
         parts.append(self._scope())
         parts.append(self._priority())
         parts.append(self._findings_section(view))
+        parts.append(self._domains())
         parts.append(self._hosts())
         parts.append(self._http())
         parts.append(self._content())
@@ -217,6 +218,22 @@ class HTMLReport:
             f"<div class='kv'><b>Impact:</b> {_esc(a.impact) or '-'}</div>"
             f"<div class='kv'><b>Remediation:</b> {_esc(a.remediation) or '-'}</div>"
             f"</div>")
+
+    def _domains(self) -> str:
+        from .domains import all_domains
+        rows = all_domains(self.graph)
+        if not rows:
+            return ""
+        out = ["<h2>Discovered Domains</h2>",
+               "<p class='note'>Hostnames from all sources: reverse DNS, TLS "
+               "SAN/CN, HTTP redirects, virtual hosts.</p>",
+               "<table><tr><th>Domain</th><th>Seen on</th><th>Source(s)</th></tr>"]
+        for name, sources, ips in rows:
+            out.append(f"<tr><td class='mono'>{_esc(name)}</td>"
+                       f"<td class='mono'>{_esc(', '.join(ips))}</td>"
+                       f"<td>{_esc(', '.join(sources))}</td></tr>")
+        out.append("</table>")
+        return "".join(out)
 
     def _hosts(self) -> str:
         rows = ["<h2>Hosts &amp; Open Ports</h2>",

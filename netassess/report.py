@@ -73,6 +73,7 @@ class ReportGenerator:
         w(self._attack_surface_summary())
         w(self._live_hosts())
         w(self._reverse_dns())
+        w(self._domains_section())
         w(self._ports_and_services())
         w(self._service_versions())
         w(self._http_section())
@@ -180,6 +181,19 @@ class ReportGenerator:
         if not any_row:
             lines.append("| _(no PTR records resolved)_ | - |")
         lines.append("\n_Hostnames are evidence only and do not prove ownership._")
+        return "\n".join(lines)
+
+    def _domains_section(self) -> str:
+        from .domains import all_domains
+        rows = all_domains(self.graph)
+        lines = ["\n## Discovered Domains\n",
+                 "All hostnames observed across every source (reverse DNS, TLS "
+                 "certificate SAN/CN, HTTP redirects, virtual hosts).\n",
+                 "| Domain | Seen on | Source(s) |", "|---|---|---|"]
+        for name, sources, ips in rows:
+            lines.append(f"| `{name}` | {', '.join(ips)} | {', '.join(sources)} |")
+        if not rows:
+            lines.append("| _(no hostnames discovered)_ | - | - |")
         return "\n".join(lines)
 
     def _ports_and_services(self) -> str:

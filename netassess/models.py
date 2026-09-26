@@ -197,6 +197,7 @@ class Host:
     latency_ms: Optional[float] = None
     primary_role: str = ""
     roles: list[str] = field(default_factory=list)
+    domains: dict[str, list[str]] = field(default_factory=dict)  # name -> sources
     ports: dict[int, Port] = field(default_factory=dict)
     udp_ports: dict[int, Port] = field(default_factory=dict)
     http_services: list[HTTPService] = field(default_factory=list)
@@ -229,6 +230,7 @@ class Host:
             "latency_ms": self.latency_ms,
             "primary_role": self.primary_role,
             "roles": self.roles,
+            "domains": self.domains,
             "ports": {str(k): v.to_dict() for k, v in self.ports.items()},
             "udp_ports": {str(k): v.to_dict() for k, v in self.udp_ports.items()},
             "http_services": [h.to_dict() for h in self.http_services],

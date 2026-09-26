@@ -112,6 +112,8 @@ class AssessmentEngine:
         self._save()
         self._phase_udp()
         self._save()
+        self._phase_domains()
+        self._save()
         self._phase_roles()
         self._save()
         self._phase_vuln()
@@ -386,6 +388,15 @@ class AssessmentEngine:
                     if len(host.findings) > before:
                         findings += 1
         self._log(f"[udp] {open_count} open UDP port(s), {findings} finding(s) added")
+
+    def _phase_domains(self):
+        from .domains import collect_domains
+        total = 0
+        for host in self.graph.hosts.values():
+            host.domains = collect_domains(host)
+            total += len(host.domains)
+        self._log(f"[domains] collected {total} unique hostname(s) across all hosts "
+                  "(reverse DNS + TLS SAN/CN + redirects + vhosts)")
 
     def _phase_roles(self):
         # pure analysis over the graph — no network
