@@ -56,6 +56,8 @@ class AggFinding:
     evidence_by_asset: dict[str, str] = field(default_factory=dict)
     kev: bool = False               # any merged instance is actively exploited
     epss: float | None = None       # max EPSS across merged instances
+    risk: int = 0                   # environmental risk score (0-100)
+    risk_reasons: list[str] = field(default_factory=list)
 
     @property
     def count(self) -> int:
@@ -126,6 +128,12 @@ def build_view(graph, min_severity: str = "info",
         fe = getattr(f, "epss", None)
         if fe is not None and (agg.epss is None or fe > agg.epss):
             agg.epss = fe
+
+    # compute the environmental risk score for each merged finding
+    from .risk import score_finding
+    for agg in groups.values():
+        agg.risk, agg.risk_reasons = score_finding(
+            agg.severity, agg.confidence, agg.validation, agg.kev, agg.epss)
 
     # bucket by validation state, most-severe first within each bucket
     by_val: dict[ValidationState, list[AggFinding]] = {}

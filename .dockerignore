@@ -27,3 +27,6 @@ diff.*
 # docs/scripts not needed at runtime
 sync.ps1
 sync.sh
+
+# test lab (not needed in the image)
+lab/

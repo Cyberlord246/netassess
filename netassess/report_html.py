@@ -200,10 +200,12 @@ class HTMLReport:
                      "ACTIVELY EXPLOITED · CISA KEV</span> ") if a.kev else ""
         epss_pill = (f"<span class='pill'>EPSS {a.epss:.0%}</span>"
                      if a.epss is not None else "")
+        risk_pill = (f"<span class='pill' style='border-color:{color};color:{color}'>"
+                     f"risk {a.risk}/100</span>")
         return (
             f"<div class='card' style='border-left-color:{color}'>"
             f"<h3>{kev_badge}{_badge(a.severity.value)} {_esc(a.title)}{suffix}</h3>"
-            f"<div class='kv'>"
+            f"<div class='kv'>{risk_pill}"
             f"<span class='pill'>confidence: {_esc(a.confidence.value)}</span>"
             f"{epss_pill}"
             f"<span class='pill'>validation: {_esc(a.validation.value)}</span>"

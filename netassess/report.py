@@ -82,6 +82,8 @@ class ReportGenerator:
         w(self._correlation())
         w(self._prioritization())
 
+        w(self._risk_ranking(view))
+
         # findings by validation state (severity-filtered + aggregated)
         note = (f"\n_{view.suppressed} low-signal finding(s) hidden from this report "
                 f"(suppressed titles, or below severity **{view.threshold.value}**). "
@@ -187,9 +189,13 @@ class ReportGenerator:
             ports = h.open_ports()
             if not ports:
                 continue
+            from .risk import host_risk
             role = f" — _role: {h.primary_role}_" if h.primary_role and h.primary_role != "unknown" else ""
+            hr, hband = host_risk(h)
+            risk_str = f" — _risk: {hr}/100 ({hband})_" if hr else ""
             lines.append(f"\n### {h.ip}"
-                         + (f" ({h.hostnames[0]})" if h.hostnames else "") + role)
+                         + (f" ({h.hostnames[0]})" if h.hostnames else "")
+                         + role + risk_str)
             for p in ports:
                 svc = p.service
                 extra = f" — {svc.product} {svc.version}".rstrip() if svc.product else ""
@@ -327,6 +333,22 @@ class ReportGenerator:
             lines.append("| - | _(none)_ | - | - | - |")
         return "\n".join(lines)
 
+    def _risk_ranking(self, view) -> str:
+        from .risk import band
+        allf = [a for bucket in view.by_validation.values() for a in bucket]
+        allf.sort(key=lambda a: a.risk, reverse=True)
+        top = [a for a in allf if a.risk > 0][:15]
+        lines = ["\n## Risk Ranking\n",
+                 "Findings ranked by environmental risk score (severity fused with "
+                 "exploitation reality — CISA KEV / EPSS — and evidence strength).\n",
+                 "| Risk | Band | Finding | Hosts |", "|---|---|---|---|"]
+        for a in top:
+            lines.append(f"| **{a.risk}**/100 | {band(a.risk)} | {a.title} | "
+                         f"{a.count} |")
+        if not top:
+            lines.append("| - | - | _(no scored findings)_ | - |")
+        return "\n".join(lines)
+
     def _render_findings(self, aggs) -> str:
         if not aggs:
             return "_None._\n"
@@ -338,7 +360,8 @@ class ReportGenerator:
             flag = " [ACTIVELY EXPLOITED - CISA KEV]" if a.kev else ""
             out.append(f"\n### {a.title}{suffix}{flag}")
             epss_str = f"  |  **EPSS:** {a.epss:.0%}" if a.epss is not None else ""
-            out.append(f"- **Severity:** {a.severity.value}  |  "
+            out.append(f"- **Risk:** {a.risk}/100  |  "
+                       f"**Severity:** {a.severity.value}  |  "
                        f"**Confidence:** {a.confidence.value}  |  "
                        f"**Validation:** {a.validation.value}{epss_str}")
             out.append(f"- **Category:** {a.category}  |  "
