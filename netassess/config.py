@@ -97,7 +97,7 @@ class Config:
     content_thorough: bool = False    # feroxbuster: collect extensions + backups
 
     # --- virtual-host probing ---------------------------------------------
-    vhost_probe: bool = False          # probe TLS SAN/CN hostnames as vhosts (in-scope)
+    vhost_probe: bool = True            # probe TLS SAN/CN hostnames as vhosts (in-scope)
 
     # --- nuclei -----------------------------------------------------------
     nuclei: bool = False               # run nuclei against discovered URLs (if installed)

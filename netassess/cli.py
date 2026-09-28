@@ -113,8 +113,8 @@ def _build_config(args) -> Config:
     udp_ports = _parse_ports(getattr(args, "udp_ports", None))
     if udp_ports:
         cfg.udp_ports = udp_ports
-    if getattr(args, "vhosts", False):
-        cfg.vhost_probe = True
+    if getattr(args, "no_vhosts", False):
+        cfg.vhost_probe = False
     if getattr(args, "nuclei", False):
         cfg.nuclei = True
     if getattr(args, "nuclei_thorough", False):
@@ -406,9 +406,9 @@ def _add_scan_args(sp: argparse.ArgumentParser):
                          "with protocol-aware probes")
     sp.add_argument("--udp-ports", dest="udp_ports",
                     help="UDP ports to scan, e.g. 53,123,161 (default: common set)")
-    sp.add_argument("--vhosts", action="store_true",
-                    help="probe TLS certificate SAN/CN hostnames as virtual hosts "
-                         "on the same in-scope IP (finds apps an IP-only scan misses)")
+    sp.add_argument("--no-vhosts", dest="no_vhosts", action="store_true",
+                    help="disable virtual-host discovery (it runs by default: probes "
+                         "TLS SAN/CN hostnames via SNI+Host on the same in-scope IP)")
     sp.add_argument("--nuclei", action="store_true",
                     help="run nuclei (if installed) against discovered URLs with a "
                          "light, target-friendly template profile")
