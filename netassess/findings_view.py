@@ -45,6 +45,7 @@ class AggFinding:
     severity: Severity
     confidence: Confidence
     validation: ValidationState
+    validation_method: str
     category: str
     source: str
     description: str
@@ -102,7 +103,9 @@ def build_view(graph, min_severity: str = "info",
         if agg is None:
             agg = AggFinding(
                 title=f.title, severity=f.severity, confidence=f.confidence,
-                validation=f.validation, category=f.category, source=f.source,
+                validation=f.validation,
+                validation_method=getattr(f, "validation_method", ""),
+                category=f.category, source=f.source,
                 description=f.description, why_it_matters=f.why_it_matters,
                 impact=f.impact, remediation=f.remediation,
             )
@@ -123,6 +126,7 @@ def build_view(graph, min_severity: str = "info",
             agg.confidence = f.confidence
         if VALIDATION_RANK.get(f.validation, 0) > VALIDATION_RANK.get(agg.validation, 0):
             agg.validation = f.validation
+            agg.validation_method = getattr(f, "validation_method", "")
         if getattr(f, "kev", False):
             agg.kev = True
         fe = getattr(f, "epss", None)

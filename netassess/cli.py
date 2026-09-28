@@ -115,6 +115,11 @@ def _build_config(args) -> Config:
         cfg.udp_ports = udp_ports
     if getattr(args, "no_vhosts", False):
         cfg.vhost_probe = False
+    if getattr(args, "no_validate", False):
+        cfg.validate = False
+    if getattr(args, "auth_config", None):
+        cfg.auth_config = args.auth_config
+        cfg.validation_credentialed = True
     if getattr(args, "nuclei", False):
         cfg.nuclei = True
     if getattr(args, "nuclei_thorough", False):
@@ -194,6 +199,11 @@ def cmd_scan(args) -> int:
     else:
         print(f" udp         : off")
     print(f" vhosts      : {'on (TLS SAN/CN vhost probing)' if cfg.vhost_probe else 'off'}")
+    if cfg.validate:
+        vmode = "credentialed" if cfg.validation_credentialed else "safe/non-destructive"
+        print(f" validate    : on ({vmode})")
+    else:
+        print(f" validate    : off")
     if cfg.nuclei:
         from .adapters.nuclei_adapter import NucleiAdapter
         n_ok = NucleiAdapter().available()
@@ -409,6 +419,14 @@ def _add_scan_args(sp: argparse.ArgumentParser):
     sp.add_argument("--no-vhosts", dest="no_vhosts", action="store_true",
                     help="disable virtual-host discovery (it runs by default: probes "
                          "TLS SAN/CN hostnames via SNI+Host on the same in-scope IP)")
+    sp.add_argument("--no-validate", dest="no_validate", action="store_true",
+                    help="disable the validation layer (it runs by default: safe, "
+                         "non-destructive assessment of candidate findings)")
+    sp.add_argument("--auth-config", dest="auth_config",
+                    help="JSON file of per-host key-based SSH creds for OPT-IN "
+                         "credentialed validation, e.g. "
+                         '{"1.2.3.4":{"user":"audit","key":"~/.ssh/id","port":22}}; '
+                         "read-only commands only, passwords never used")
     sp.add_argument("--nuclei", action="store_true",
                     help="run nuclei (if installed) against discovered URLs with a "
                          "light, target-friendly template profile")

@@ -380,12 +380,16 @@ class ReportGenerator:
             flag = " [ACTIVELY EXPLOITED - CISA KEV]" if a.kev else ""
             out.append(f"\n### {a.title}{suffix}{flag}")
             epss_str = f"  |  **EPSS:** {a.epss:.0%}" if a.epss is not None else ""
+            from .validation import display_state
+            label = display_state(a.validation, a.validation_method, a.category)
             out.append(f"- **Risk:** {a.risk}/100  |  "
                        f"**Severity:** {a.severity.value}  |  "
                        f"**Confidence:** {a.confidence.value}  |  "
-                       f"**Validation:** {a.validation.value}{epss_str}")
+                       f"**Assurance:** {label} ({a.validation.value}){epss_str}")
+            method = (f"  |  **Validation method:** {a.validation_method}"
+                      if a.validation_method else "")
             out.append(f"- **Category:** {a.category}  |  "
-                       f"**Detection source:** {a.source}")
+                       f"**Detection source:** {a.source}{method}")
             out.append(f"- **Affected assets ({a.count}):** "
                        + ", ".join(f"`{x}`" for x in a.assets))
             # show a couple of representative evidence samples

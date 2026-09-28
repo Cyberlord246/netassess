@@ -96,6 +96,11 @@ class Config:
     content_extensions: str = ""      # e.g. "php,bak,zip,sql" (feroxbuster -x)
     content_thorough: bool = False    # feroxbuster: collect extensions + backups
 
+    # --- validation & assessment ------------------------------------------
+    validate: bool = True               # run the (non-destructive) validation layer
+    validation_credentialed: bool = False  # opt-in credentialed confirmation (key-based SSH, read-only)
+    auth_config: Optional[str] = None   # JSON: host -> {user, key, port} for credentialed checks
+
     # --- virtual-host probing ---------------------------------------------
     vhost_probe: bool = True            # probe TLS SAN/CN hostnames as vhosts (in-scope)
 

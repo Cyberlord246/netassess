@@ -114,11 +114,13 @@ class AssessmentEngine:
         self._save()
         self._phase_domains()
         self._save()
-        self._phase_roles()
-        self._save()
         self._phase_vuln()
         self._save()
         self._phase_cve()
+        self._save()
+        self._phase_validate()
+        self._save()
+        self._phase_roles()
         self._save()
         return self.graph
 
@@ -436,6 +438,21 @@ class AssessmentEngine:
         n = self.cve.assess(self.graph)
         self._log(f"[cve] {n} CVE lead(s) added (marked NEEDS_VALIDATION)")
         self._enrich_kev()
+
+    def _phase_validate(self):
+        if not getattr(self.config, "validate", True):
+            self._log("[validate] disabled")
+            return
+        from .validation import ValidationEngine
+        engine = ValidationEngine.from_config(self.config)
+        cred = any(v.name == "credentialed" for v in engine.validators)
+        mode = "applicability + non-destructive" + (" + credentialed" if cred else "")
+        self._log(f"[validate] assessing findings ({mode})…")
+        counts = engine.validate_graph(self.graph)
+        self._log(f"[validate] {counts['touched']} finding(s) assessed — "
+                  f"{counts['validated']} validated "
+                  f"({counts['credentialed']} credentialed), "
+                  f"{counts['downgraded']} demoted to unconfirmed")
 
     def _enrich_kev(self):
         from .cve.kev import KEVData, default_cache_path, enrich_graph

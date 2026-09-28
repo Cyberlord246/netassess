@@ -174,7 +174,8 @@ class Finding:
     impact: str = ""
     remediation: str = ""
     validation: ValidationState = ValidationState.OBSERVED
-    source: str = "netassess"       # detection source / adapter
+    validation_method: str = ""     # how it was validated (applicability/credentialed/poc/...)
+    source: str = "netassess"       # detection source / adapter (detection method)
     category: str = "general"
     ts: str = field(default_factory=iso)
     kev: bool = False               # on CISA Known Exploited Vulnerabilities list
