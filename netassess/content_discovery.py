@@ -224,6 +224,25 @@ def _load_wordlist(extra_path: str | None, quick: bool) -> list[tuple[str, str, 
     return list(entries.values())
 
 
+class _SNIHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPS connection that connects to one host (the authorized IP) but presents
+    a *different* TLS SNI / ``server_hostname`` (the vhost). This lets us scan
+    SNI-strict name-based TLS virtual hosts without ever connecting to the vhost's
+    own DNS name — the socket stays pinned to the authorized IP."""
+
+    def __init__(self, ip, port, *, sni, **kwargs):
+        super().__init__(ip, port, **kwargs)
+        self._sni = sni
+
+    def connect(self):
+        # HTTPConnection.connect() opens the raw socket to (self.host, self.port)
+        # == the authorized IP. We then wrap it with the vhost as server_hostname.
+        http.client.HTTPConnection.connect(self)
+        server_hostname = self._tunnel_host or self._sni or self.host
+        self.sock = self._context.wrap_socket(self.sock,
+                                              server_hostname=server_hostname)
+
+
 class ContentDiscovery:
     def __init__(self, config: Config, scope: ScopeEngine):
         self.config = config
@@ -232,11 +251,15 @@ class ContentDiscovery:
                                     quick=getattr(config, "content_quick", False))
 
     # -- persistent (keep-alive) connection I/O -------------------------- #
-    def _open(self, ip: str, port: int, scheme: str):
+    def _open(self, ip: str, port: int, scheme: str, sni: str = ""):
         if scheme == "https":
             ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
+            if sni:
+                # connect to the authorized IP, but send the vhost as TLS SNI
+                return _SNIHTTPSConnection(
+                    ip, port, sni=sni, timeout=self.config.timeout, context=ctx)
             return http.client.HTTPSConnection(
                 ip, port, timeout=self.config.timeout, context=ctx)
         return http.client.HTTPConnection(ip, port, timeout=self.config.timeout)
@@ -260,7 +283,7 @@ class ContentDiscovery:
                 break
         return head, total, fully
 
-    def _request_on(self, conn, ip, port, scheme, host_header, path):
+    def _request_on(self, conn, ip, port, scheme, host_header, path, sni=""):
         """One keep-alive GET on a (possibly reused) connection. Returns
         (conn, result|None); reopens the connection on error and retries once."""
         headers = {
@@ -277,7 +300,7 @@ class ContentDiscovery:
                     return conn, None
                 try:
                     if conn is None:
-                        conn = self._open(ip, port, scheme)
+                        conn = self._open(ip, port, scheme, sni)
                     conn.request("GET", "/" + path.lstrip("/"), headers=headers)
                     resp = conn.getresponse()
                     head, total, fully = self._read_bounded(resp)
@@ -302,14 +325,14 @@ class ContentDiscovery:
                     conn = None          # retry once with a fresh connection
         return conn, None
 
-    def _baseline(self, ip, port, scheme, host_header):
+    def _baseline(self, ip, port, scheme, host_header, sni=""):
         """Detect soft-404: does the server answer 200 to nonsense paths?"""
         lengths = []
         status_200 = False
         conn = None
         for _ in range(2):
             rnd = "".join(random.choices(string.ascii_lowercase, k=16))
-            conn, r = self._request_on(conn, ip, port, scheme, host_header, rnd)
+            conn, r = self._request_on(conn, ip, port, scheme, host_header, rnd, sni)
             if r and r[0] == 200:
                 status_200 = True
                 lengths.append(r[1])
@@ -332,7 +355,10 @@ class ContentDiscovery:
             host_header = vhost
         else:
             host_header = host.hostnames[0] if host.hostnames else ip
-        soft404, base_len = self._baseline(ip, port, scheme, host_header)
+        # For HTTPS vhosts, also present the vhost as TLS SNI so SNI-strict
+        # servers route to the right backend (still connecting to the IP).
+        sni = vhost if (vhost and scheme == "https") else ""
+        soft404, base_len = self._baseline(ip, port, scheme, host_header, sni)
 
         q: "Queue" = Queue()
         for entry in self.paths:
@@ -350,7 +376,8 @@ class ContentDiscovery:
                     path, category, sev = q.get_nowait()
                 except Empty:
                     break
-                conn, r = self._request_on(conn, ip, port, scheme, host_header, path)
+                conn, r = self._request_on(conn, ip, port, scheme, host_header,
+                                           path, sni)
                 if r is None:
                     continue
                 status, length, body, loc, ctype = r

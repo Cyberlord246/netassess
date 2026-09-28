@@ -159,6 +159,73 @@ def test_high_value_paths_stay_individual():
     assert any(".env" in f.title for f in fs)
 
 
+def test_sni_connection_pins_ip_but_sends_vhost_sni():
+    """_SNIHTTPSConnection connects to the IP but wraps TLS with the vhost SNI."""
+    import http.client
+    from ..content_discovery import _SNIHTTPSConnection
+
+    captured = {}
+
+    class _FakeCtx:
+        def wrap_socket(self, sock, server_hostname=None):
+            captured["server_hostname"] = server_hostname
+            return "wrapped-sock"
+
+    conn = _SNIHTTPSConnection("192.0.2.10", 443, sni="admin.example.com",
+                               context=_FakeCtx())
+    orig = http.client.HTTPConnection.connect
+
+    def _fake_base_connect(self):
+        self.sock = "raw-sock-to-ip"     # pretend we opened a socket to self.host
+
+    http.client.HTTPConnection.connect = _fake_base_connect
+    try:
+        conn.connect()
+    finally:
+        http.client.HTTPConnection.connect = orig
+    assert conn.host == "192.0.2.10"                      # connect target = IP
+    assert captured["server_hostname"] == "admin.example.com"  # SNI = vhost
+    assert conn.sock == "wrapped-sock"
+
+
+def test_content_vhost_routes_by_host_header():
+    """A path that only exists for a vhost is found via the Host header, and the
+    finding asset is tagged with the vhost name (connection stays on the IP)."""
+    class _VHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            host = self.headers.get("Host", "")
+            if self.path.rstrip("/") == "/panel" and host.startswith("admin.local"):
+                body, code = b"<title>Panel</title>", 200
+            else:
+                body, code = b"nope", 404
+            self.send_response(code)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _VHandler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    port = srv.server_address[1]
+    try:
+        cfg = Config(targets=["127.0.0.1/32"], timeout=2.0)
+        cd = ContentDiscovery(cfg, ScopeEngine(cfg))
+        cd.paths = [("panel", "common", Severity.MEDIUM)]
+        host = Host(ip="127.0.0.1")
+        # vhost service: URL carries the hostname; ip is the authorized target
+        svc = HTTPService(url=f"http://admin.local:{port}/", ip="127.0.0.1",
+                          port=port, scheme="http")
+        findings = cd.scan_service(host, svc)
+        assert any(d["path"] == "/panel" for d in svc.discovered_paths)
+        assert findings and all("[admin.local]" in f.asset for f in findings)
+    finally:
+        srv.shutdown()
+
+
 def _run_all():
     fns = [v for k, v in globals().items() if k.startswith("test_")]
     for fn in fns:

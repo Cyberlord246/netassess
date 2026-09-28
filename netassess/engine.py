@@ -330,14 +330,25 @@ class AssessmentEngine:
         self._log(f"[content] enumerating web content on {len(services)} "
                   f"service(s) via {backend}…")
 
+        from .content_discovery import _vhost_of
         added = 0
+        sni_passes = 0
         total = len(services)
         for idx, (host, svc) in enumerate(services, 1):
             # Mandatory scope gate before handing a target to any tool.
             if self.scope.authorize(host.ip, svc.port).allowed:
+                # HTTPS virtual hosts need TLS SNI = the vhost name, which
+                # feroxbuster can't set while pinned to the IP. Use the built-in
+                # SNI-aware pass for those; feroxbuster for everything else.
+                is_tls_vhost = (svc.scheme == "https"
+                                and bool(_vhost_of(svc, svc.ip)))
                 try:
-                    findings = (self._run_ferox(host, svc) if use_ferox
-                                else self.content.scan_service(host, svc))
+                    if use_ferox and not is_tls_vhost:
+                        findings = self._run_ferox(host, svc)
+                    else:
+                        if use_ferox and is_tls_vhost:
+                            sni_passes += 1
+                        findings = self.content.scan_service(host, svc)
                 except Exception as exc:
                     host.notes.append(f"content discovery error on {svc.port}: {exc}")
                     findings = []
@@ -347,7 +358,9 @@ class AssessmentEngine:
                     if len(host.findings) > before:
                         added += 1
             self.progress.items(idx, total, "web services")
-        self._log(f"[content] {added} path finding(s) added")
+        note = (f" ({sni_passes} HTTPS vhost(s) via SNI-aware built-in pass)"
+                if sni_passes else "")
+        self._log(f"[content] {added} path finding(s) added{note}")
 
     def _run_ferox(self, host, svc):
         wordlist = self.config.content_wordlist or _BUNDLED_WORDLIST
