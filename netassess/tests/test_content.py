@@ -80,33 +80,83 @@ def test_content_discovery_reuses_connection_across_many_paths():
         srv.shutdown()
 
 
-def test_generic_paths_grouped_high_value_individual():
+def _mk(path, status, category="common", loc="", ct="", title="", length=100):
+    return {"path": path, "url": f"http://h/{path}", "status": status,
+            "category": category, "sev": Severity.LOW, "title": title,
+            "location": loc, "content_type": ct, "length": length}
+
+
+def test_redirects_grouped_by_destination_with_representatives():
     from ..content_discovery import make_findings
-    from ..models import Severity
-    hits = [
-        {"path": ".env", "url": "http://h/.env", "status": 200,
-         "category": "secrets", "sev": Severity.HIGH, "title": ""},
-        {"path": "admin", "url": "http://h/admin", "status": 200,
-         "category": "admin", "sev": Severity.MEDIUM, "title": ""},
-        {"path": "Video/be", "url": "http://h/Video/be", "status": 302,
-         "category": "common", "sev": Severity.LOW, "title": ""},
-        {"path": "XML/bio", "url": "http://h/XML/bio", "status": 302,
-         "category": "common", "sev": Severity.LOW, "title": ""},
-        {"path": "old/", "url": "http://h/old/", "status": 200,
-         "category": "dir", "sev": Severity.LOW, "title": ""},
-    ]
-    fs = make_findings("206.15.204.180:80", hits, source="feroxbuster")
-    titles = [f.title for f in fs]
-    # high-value paths keep their own finding
-    assert any(".env" in t for t in titles)
-    assert any("admin" in t.lower() for t in titles)
-    # the 3 generic (common/dir) collapse into ONE "Reachable paths" finding
-    grouped = [f for f in fs if f.title == "Reachable paths (content discovery)"]
-    assert len(grouped) == 1
-    assert "3 path(s)" in grouped[0].evidence
-    assert "/Video/be" in grouped[0].evidence and "/old/" in grouped[0].evidence
-    # total = .env + admin + one grouped = 3 (not 5 separate)
-    assert len(fs) == 3
+    hits = [_mk(f"page{i}", 302, loc="/login") for i in range(500)]
+    fs = make_findings("h:80", hits, source="feroxbuster")
+    red = [f for f in fs if f.title == "Redirects to /login"]
+    assert len(red) == 1                       # 500 URLs -> ONE finding
+    assert "500 URL" in red[0].evidence
+    assert red[0].evidence.count("http://h/page") == 3   # 3 representatives
+    assert "+497 more" in red[0].evidence
+
+
+def test_different_redirect_destinations_stay_separate():
+    from ..content_discovery import make_findings
+    hits = [_mk("a", 302, loc="/login"), _mk("b", 302, loc="/login"),
+            _mk("c", 301, loc="/home")]
+    fs = make_findings("h:80", hits, source="feroxbuster")
+    titles = {f.title for f in fs}
+    assert "Redirects to /login" in titles and "Redirects to /home" in titles
+
+
+def test_200s_deduplicated_by_signature():
+    from ..content_discovery import make_findings
+    # 3 identical junk 200s (same title+length) + 2 distinct pages
+    hits = [_mk("j1", 200, title="Home", length=500),
+            _mk("j2", 200, title="Home", length=500),
+            _mk("j3", 200, title="Home", length=500),
+            _mk("dashboard", 200, title="Dashboard", length=900),
+            _mk("account", 200, title="Account", length=1200)]
+    fs = make_findings("h:80", hits, source="feroxbuster")
+    ok = [f for f in fs if f.title == "Reachable pages (HTTP 200)"][0]
+    assert "3 unique 200 page(s)" in ok.evidence   # 3 signatures, not 5 entries
+    assert "similar" in ok.evidence                # junk collapsed with a count
+
+
+def test_static_assets_filtered_out():
+    from ..content_discovery import make_findings
+    hits = [_mk("style.css", 200), _mk("logo.png", 200),
+            _mk("app.js", 200), _mk("font.woff2", 200),
+            _mk("dashboard", 200, title="Dash")]
+    fs = make_findings("h:80", hits, source="feroxbuster")
+    # only the real page survives; css/png/js/woff2 dropped
+    ok = [f for f in fs if f.title == "Reachable pages (HTTP 200)"]
+    assert ok and "dashboard" in ok[0].evidence
+    assert ".css" not in ok[0].evidence and ".png" not in ok[0].evidence
+
+
+def test_static_filtered_by_content_type():
+    from ..content_discovery import make_findings, _is_static
+    assert _is_static(_mk("weird", 200, ct="text/css"))
+    assert _is_static(_mk("x", 200, ct="image/png"))
+    assert not _is_static(_mk("page", 200, ct="text/html"))
+
+
+def test_other_statuses_grouped_with_representatives():
+    from ..content_discovery import make_findings
+    hits = ([_mk(f"a{i}", 403) for i in range(10)] +
+            [_mk(f"b{i}", 401) for i in range(5)])
+    fs = make_findings("h:80", hits, source="feroxbuster")
+    f403 = [f for f in fs if "HTTP 403" in f.title][0]
+    f401 = [f for f in fs if "HTTP 401" in f.title][0]
+    assert "10 URL" in f403.evidence and f403.evidence.count("http://h/a") == 3
+    assert "5 URL" in f401.evidence
+
+
+def test_high_value_paths_stay_individual():
+    from ..content_discovery import make_findings
+    hits = [{"path": ".env", "url": "http://h/.env", "status": 200,
+             "category": "secrets", "sev": Severity.HIGH, "title": "",
+             "location": "", "content_type": "", "length": 40}]
+    fs = make_findings("h:80", hits, source="feroxbuster")
+    assert any(".env" in f.title for f in fs)
 
 
 def _run_all():

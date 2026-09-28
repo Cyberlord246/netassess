@@ -100,6 +100,9 @@ class FeroxbusterAdapter(ToolAdapter):
                 "content_length": obj.get("content_length", 0),
                 "line_count": obj.get("line_count", 0),
                 "word_count": obj.get("word_count", 0),
+                # feroxbuster may include these depending on version/flags
+                "location": obj.get("location") or obj.get("redirect") or "",
+                "content_type": obj.get("content_type", ""),
             })
         return out
 
@@ -136,7 +139,10 @@ class FeroxbusterAdapter(ToolAdapter):
                                "length": rec["content_length"],
                                "category": category, "title": ""})
             hits.append({"path": path, "url": url, "status": rec["status"],
-                         "category": category, "sev": sev, "title": ""})
+                         "category": category, "sev": sev, "title": "",
+                         "length": rec.get("content_length", 0),
+                         "location": rec.get("location", ""),
+                         "content_type": rec.get("content_type", "")})
         discovered.sort(key=lambda x: x["path"])
         svc.discovered_paths = discovered
         # high-value paths -> individual findings; generic ones -> one grouped entry

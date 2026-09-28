@@ -273,17 +273,21 @@ class ReportGenerator:
                     if s.discovered_paths]
         if not services:
             return ""
-        lines = ["\n## Discovered Web Content\n",
-                 "Paths found via GET-only content discovery (all severities; "
-                 "sensitive ones also appear under Findings).\n"]
+        lines = ["\n## Discovered Web Content (summary)\n",
+                 "Deduplicated, grouped results appear under **Findings** "
+                 "(HTTP 200 pages, redirect groups, access-controlled paths). "
+                 "This is a per-service count; the full path list is in "
+                 "`report.json`.\n",
+                 "| Service | Total | 200 | 3xx | 401/403 | Other |",
+                 "|---|---|---|---|---|---|"]
         for _h, s in services:
-            base = s.url.rstrip("/")
-            lines.append(f"\n### {s.url}")
-            lines.append("| URL | Status | Category |")
-            lines.append("|---|---|---|")
-            for p in sorted(s.discovered_paths, key=lambda x: x["path"]):
-                url = p.get("url") or (base + p["path"])   # absolute location
-                lines.append(f"| `{url}` | {p['status']} | {p['category']} |")
+            paths = s.discovered_paths
+            n = len(paths)
+            c200 = sum(1 for p in paths if p["status"] == 200)
+            c3xx = sum(1 for p in paths if 300 <= p["status"] < 400)
+            cauth = sum(1 for p in paths if p["status"] in (401, 403))
+            other = n - c200 - c3xx - cauth
+            lines.append(f"| {s.url} | {n} | {c200} | {c3xx} | {cauth} | {other} |")
         return "\n".join(lines)
 
     def _tls_section(self) -> str:

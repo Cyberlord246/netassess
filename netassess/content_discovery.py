@@ -283,6 +283,7 @@ class ContentDiscovery:
                     head, total, fully = self._read_bounded(resp)
                     status = resp.status
                     loc = resp.getheader("Location", "")
+                    ctype = resp.getheader("Content-Type", "")
                     reuse = fully and resp.getheader("Connection", "").lower() != "close"
                     if not reuse:
                         try:
@@ -290,7 +291,7 @@ class ContentDiscovery:
                         except OSError:
                             pass
                         conn = None
-                    return conn, (status, total, head, loc)
+                    return conn, (status, total, head, loc, ctype)
                 except (http.client.HTTPException, ssl.SSLError, socket.timeout,
                         OSError):
                     try:
@@ -345,7 +346,7 @@ class ContentDiscovery:
                 conn, r = self._request_on(conn, ip, port, scheme, host_header, path)
                 if r is None:
                     continue
-                status, length, body, _loc = r
+                status, length, body, loc, ctype = r
                 if status not in _PRESENT:
                     continue
                 if soft404 and status == 200 and abs(length - base_len) < 64:
@@ -358,7 +359,8 @@ class ContentDiscovery:
                 with lock:
                     hits.append({"path": path, "url": url, "status": status,
                                  "length": length, "category": category,
-                                 "sev": sev, "title": title})
+                                 "sev": sev, "title": title, "location": loc,
+                                 "content_type": ctype})
             if conn:
                 try:
                     conn.close()
@@ -432,47 +434,139 @@ def make_path_finding(asset: str, path: str, url: str, status: int,
     )
 
 
-# low-signal categories: collapse into ONE "Reachable paths" finding per host,
-# instead of a separate finding per path. High-value categories stay individual.
+# low-signal categories: collapsed/grouped instead of one finding per path.
+# High-value categories (secrets/config/admin/api/...) stay individual.
 GROUPED_CATEGORIES = {"common", "dir", "info", "info-leak", "custom"}
+
+# static assets to drop from reporting entirely (by extension or content-type)
+_STATIC_EXT = {
+    "css", "js", "map", "png", "jpg", "jpeg", "gif", "bmp", "webp", "svg", "ico",
+    "cur", "woff", "woff2", "ttf", "otf", "eot", "mp4", "m4v", "m4a", "mp3",
+    "wav", "ogg", "webm", "avi", "mov", "flv", "mpg", "mpeg", "swf",
+}
+_STATIC_CT = ("text/css", "image/", "font/", "audio/", "video/",
+              "application/font", "application/javascript", "application/x-font",
+              "application/vnd.ms-fontobject")
+_REPRESENTATIVE = 3        # how many example URLs to show per group
+
+
+def _is_static(h: dict) -> bool:
+    last = h.get("path", "").rsplit("/", 1)[-1].split("?", 1)[0].lower()
+    ext = last.rsplit(".", 1)[-1] if "." in last else ""
+    if ext in _STATIC_EXT:
+        return True
+    ct = (h.get("content_type") or "").lower()
+    return any(x in ct for x in _STATIC_CT)
+
+
+def _dest_of(h: dict) -> str:
+    """Normalised redirect destination (path) for grouping 3xx responses."""
+    loc = h.get("location") or ""
+    if not loc:
+        return "(unspecified)"
+    from urllib.parse import urlparse
+    return urlparse(loc).path or loc
+
+
+def _grouped_finding(asset, source, title, category, severity, description,
+                     why, hits) -> Finding:
+    """One finding for a group of hits: show 2-3 representative URLs + a count."""
+    hits = sorted(hits, key=lambda x: x.get("path", ""))
+    reps = [h.get("url") or h.get("path", "") for h in hits[:_REPRESENTATIVE]]
+    extra = len(hits) - len(reps)
+    ev = f"{len(hits)} URL(s). Representative: " + ", ".join(reps)
+    if extra > 0:
+        ev += f". +{extra} more with the same behavior."
+    return Finding(
+        title=title, asset=asset, evidence=ev[:1500], description=description,
+        why_it_matters=why, severity=severity, confidence=Confidence.MEDIUM,
+        impact="Reachable endpoints to review; grouped to reduce noise.",
+        remediation="Review the representative URLs; full list is in report.json.",
+        validation=ValidationState.OBSERVED, source=source, category=category)
 
 
 def make_findings(asset: str, hits: list[dict], source: str = "content-discovery"
                   ) -> list[Finding]:
-    """Turn per-path hits into findings: high-value paths get their own finding;
-    generic/low-signal paths are grouped into a single 'Reachable paths' entry
-    per host listing all the endpoints."""
+    """Deduplicated, filtered, prioritised findings from raw content-discovery
+    hits:
+      * static assets (css/images/fonts/media/icons) are dropped;
+      * high-value paths (.env/.git/admin/api/...) get their own finding;
+      * 3xx redirects are grouped by destination (2-3 example URLs + a count);
+      * 200s are deduplicated by response signature and listed as absolute URLs;
+      * other statuses (401/403/405/5xx) are grouped by status with examples.
+    """
+    from collections import defaultdict
+
     findings: list[Finding] = []
-    grouped: list[dict] = []
-    for h in hits:
-        if h["category"] in GROUPED_CATEGORIES:
-            grouped.append(h)
-        else:
-            findings.append(make_path_finding(
-                asset, h["path"], h["url"], h["status"], h["category"],
-                h.get("sev", Severity.LOW), h.get("title", ""), source))
-    if grouped:
-        grouped.sort(key=lambda x: x["path"])
-        # show the absolute URL (scheme://ip:port/path) for each discovered path
-        listing = ", ".join(
-            f"{g.get('url') or '/' + g['path'].lstrip('/')} ({g['status']})"
-            for g in grouped)
+    hits = [h for h in hits if not _is_static(h)]      # (3) filter static
+    high = [h for h in hits if h["category"] not in GROUPED_CATEGORIES]
+    generic = [h for h in hits if h["category"] in GROUPED_CATEGORIES]
+
+    # high-value paths -> individual findings (unchanged)
+    for h in high:
+        findings.append(make_path_finding(
+            asset, h["path"], h["url"], h["status"], h["category"],
+            h.get("sev", Severity.LOW), h.get("title", ""), source))
+
+    redirects = [h for h in generic if 300 <= h["status"] < 400]
+    ok = [h for h in generic if h["status"] == 200]
+    other = [h for h in generic if h["status"] not in range(300, 400)
+             and h["status"] != 200]
+
+    # (1) group redirects by destination — one finding per destination
+    dests: dict = defaultdict(list)
+    for h in redirects:
+        dests[_dest_of(h)].append(h)
+    for dest, grp in sorted(dests.items(), key=lambda kv: -len(kv[1])):
+        findings.append(_grouped_finding(
+            asset, source, f"Redirects to {dest}", "content-redirect",
+            Severity.INFO,
+            f"{len(grp)} discovered path(s) return a redirect (3xx) to {dest} "
+            "(commonly an auth/login gate or canonical redirect).",
+            "Bulk identical redirects usually mean auth-gated or non-existent "
+            "paths; grouped to keep the report clean.",
+            grp))
+
+    # (2) deduplicate 200s by response signature; list unique absolute URLs
+    if ok:
+        sigs: dict = defaultdict(list)
+        for h in ok:
+            sigs[(h.get("title", ""), round((h.get("length") or 0) / 128))].append(h)
+        uniq = []
+        for _sig, grp in sigs.items():
+            grp.sort(key=lambda x: x.get("path", ""))
+            u = grp[0].get("url") or grp[0].get("path", "")
+            if len(grp) > 1:
+                u += f" (+{len(grp) - 1} similar)"
+            uniq.append(u)
+        uniq.sort()
+        shown = ", ".join(uniq[:60]) + (" …" if len(uniq) > 60 else "")
         findings.append(Finding(
-            title="Reachable paths (content discovery)",
-            asset=asset,
-            evidence=f"{len(grouped)} path(s): {listing}"[:1500],
-            description="Content discovery found additional reachable paths on this "
-                        "web service (generic/low-signal). Each is listed in the "
-                        "evidence with its HTTP status.",
-            why_it_matters="Reachable paths expand the attack surface; review for "
-                           "anything sensitive or unintended.",
+            title="Reachable pages (HTTP 200)", asset=asset,
+            evidence=f"{len(uniq)} unique 200 page(s): {shown}"[:1800],
+            description="Distinct application pages returning HTTP 200 "
+                        "(deduplicated by response signature).",
+            why_it_matters="Live 200 application pages are the primary web attack "
+                           "surface to review.",
             severity=Severity.LOW, confidence=Confidence.MEDIUM,
-            impact="Additional reachable endpoints to review for authn/authz.",
-            remediation="Review the listed paths; restrict or remove any that "
-                        "should not be publicly reachable.",
+            impact="Reachable application endpoints.",
+            remediation="Review these pages for sensitive functionality / missing "
+                        "authorization.",
             validation=ValidationState.OBSERVED, source=source,
-            category="content-paths",
-        ))
+            category="content-200"))
+
+    # (2) other statuses (401/403/405/5xx) grouped by status with examples
+    by_status: dict = defaultdict(list)
+    for h in other:
+        by_status[h["status"]].append(h)
+    for st, grp in sorted(by_status.items()):
+        findings.append(_grouped_finding(
+            asset, source, f"Access-controlled/other paths (HTTP {st})",
+            "content-other", Severity.LOW,
+            f"{len(grp)} path(s) returned HTTP {st}.",
+            ("401/403 confirm a resource exists but is protected; other codes "
+             "may indicate faults or filtering."),
+            grp))
     return findings
 
 

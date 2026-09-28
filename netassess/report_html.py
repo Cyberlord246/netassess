@@ -274,21 +274,23 @@ class HTMLReport:
                     if s.discovered_paths]
         if not services:
             return ""
-        out = ["<h2>Discovered Web Content</h2>",
-               "<p class='note'>GET-only content discovery. Sensitive paths also "
-               "appear under Findings.</p>"]
+        out = ["<h2>Discovered Web Content (summary)</h2>",
+               "<p class='note'>Deduplicated, grouped results (200 pages, redirect "
+               "groups, access-controlled paths) appear under Findings. Per-service "
+               "counts below; full path list is in report.json.</p>",
+               "<table><tr><th>Service</th><th>Total</th><th>200</th><th>3xx</th>"
+               "<th>401/403</th><th>Other</th></tr>"]
         for _h, s in services:
-            base = s.url.rstrip("/")
-            out.append(f"<h3>{_esc(s.url)}</h3>")
-            out.append("<table><tr><th>URL</th><th>Status</th><th>Category</th>"
-                       "<th>Title</th></tr>")
-            for p in sorted(s.discovered_paths, key=lambda x: x["path"]):
-                url = p.get("url") or (base + p["path"])   # absolute location
-                out.append(f"<tr><td class='mono'>{_esc(url)}</td>"
-                           f"<td>{_esc(p['status'])}</td>"
-                           f"<td>{_esc(p['category'])}</td>"
-                           f"<td>{_esc(p.get('title',''))}</td></tr>")
-            out.append("</table>")
+            paths = s.discovered_paths
+            n = len(paths)
+            c200 = sum(1 for p in paths if p["status"] == 200)
+            c3xx = sum(1 for p in paths if 300 <= p["status"] < 400)
+            cauth = sum(1 for p in paths if p["status"] in (401, 403))
+            other = n - c200 - c3xx - cauth
+            out.append(f"<tr><td class='mono'>{_esc(s.url)}</td><td>{n}</td>"
+                       f"<td>{c200}</td><td>{c3xx}</td><td>{cauth}</td>"
+                       f"<td>{other}</td></tr>")
+        out.append("</table>")
         return "".join(out)
 
     def _tls(self) -> str:
