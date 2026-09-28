@@ -14,13 +14,14 @@ from .tls_probe import TLSProbe
 from .ldap_probe import LDAPProbe
 from .remote_probes import RDPProbe, RsyncProbe, VNCProbe
 from .service_probes import (
-    DNSProbe, DatabaseProbe, GenericProbe, SMBProbe, SMTPProbe, SSHProbe,
+    DNSProbe, DatabaseProbe, FTPProbe, GenericProbe, IMAPProbe, POP3Probe,
+    SMBProbe, SMTPProbe, SSHProbe,
 )
 
 # Order matters: specific probes first, generic last.
 SPECIFIC_PROBE_CLASSES = [
-    HTTPProbe, TLSProbe, SSHProbe, SMTPProbe, DNSProbe, SMBProbe, LDAPProbe,
-    RDPProbe, VNCProbe, RsyncProbe, DatabaseProbe,
+    HTTPProbe, TLSProbe, SSHProbe, SMTPProbe, FTPProbe, IMAPProbe, POP3Probe,
+    DNSProbe, SMBProbe, LDAPProbe, RDPProbe, VNCProbe, RsyncProbe, DatabaseProbe,
 ]
 
 
@@ -35,6 +36,6 @@ def build_generic(config: Config, scope: ScopeEngine) -> ServiceProbe:
 __all__ = [
     "ProbeResult", "ServiceProbe", "build_probes", "build_generic",
     "HTTPProbe", "TLSProbe", "SSHProbe", "SMTPProbe", "DNSProbe", "SMBProbe",
-    "LDAPProbe", "RDPProbe", "VNCProbe", "RsyncProbe", "DatabaseProbe",
-    "GenericProbe",
+    "LDAPProbe", "RDPProbe", "VNCProbe", "RsyncProbe", "FTPProbe", "IMAPProbe",
+    "POP3Probe", "DatabaseProbe", "GenericProbe",
 ]

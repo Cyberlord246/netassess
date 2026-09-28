@@ -6,11 +6,45 @@ connection.
 """
 from __future__ import annotations
 
+import re
 import socket
+import ssl
 import struct
 
 from ..models import Confidence, Finding, Host, Port, Service, Severity, ValidationState
 from .base import ProbeResult, ServiceProbe
+
+# --- banner -> (product, version) extraction (feeds the CVE engine) --------- #
+_VER = r"(\d+(?:\.\d+)+[a-z0-9._-]*)"
+_BANNER_PRODUCTS = [
+    ("vsftpd", r"vsftpd"), ("proftpd", r"proftpd"), ("pure-ftpd", r"pure-?ftpd"),
+    ("filezilla", r"filezilla"), ("microsoft ftpd", r"microsoft ftp"),
+    ("dovecot", r"dovecot"), ("courier", r"courier"), ("cyrus", r"cyrus"),
+    ("exim", r"exim"), ("postfix", r"postfix"), ("openssh", r"openssh"),
+]
+
+
+def banner_product_version(banner: str) -> tuple[str, str]:
+    """Best-effort (product, version) from a service banner."""
+    prod = ""
+    for name, rx in _BANNER_PRODUCTS:
+        if re.search(rx, banner, re.I):
+            prod = name
+            break
+    m = re.search(_VER, banner)
+    return prod, (m.group(1) if m else "")
+
+
+def parse_mysql_greeting(data: bytes) -> tuple[str, str]:
+    """MySQL/MariaDB send the version in cleartext in the initial handshake."""
+    if len(data) < 6 or data[4] != 0x0A:      # protocol version 10
+        return "", ""
+    end = data.find(b"\x00", 5)
+    if end == -1:
+        return "", ""
+    ver = data[5:end].decode("latin-1", "replace")
+    prod = "mariadb" if "mariadb" in ver.lower() else "mysql"
+    return prod, ver
 
 
 def _recv_banner(scope, config, ip, port, send=b"", read=512, wait_first=True):
@@ -32,6 +66,85 @@ def _recv_banner(scope, config, ip, port, send=b"", read=512, wait_first=True):
                 sock.close()
             except OSError:
                 pass
+
+
+def _recv_banner_maybe_tls(scope, config, ip, port, tls: bool, read=512):
+    """Read a service banner, wrapping in TLS first for implicit-TLS ports."""
+    if not tls:
+        return _recv_banner(scope, config, ip, port, read=read)
+    with scope.slot(ip, port) as s:
+        if not s.allowed:
+            return None, "scope denied"
+        sock = None
+        try:
+            raw = socket.create_connection((ip, port), timeout=config.timeout)
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            sock = ctx.wrap_socket(raw, server_hostname=None)
+            sock.settimeout(config.timeout)
+            return sock.recv(read), ""
+        except (ssl.SSLError, socket.timeout, OSError) as exc:
+            return None, str(exc)
+        finally:
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+
+
+class _BannerVersionProbe(ServiceProbe):
+    """Shared base: read a (optionally TLS) banner, extract product/version so the
+    CVE engine can match it. Findings (CVE/KEV) then aggregate by title across
+    hosts automatically."""
+    svc_name = "service"
+    ports: tuple = ()
+    tls_ports: tuple = ()
+
+    def matches(self, port: Port) -> bool:
+        return port.number in self.ports or port.number in self.tls_ports \
+            or port.service.name == self.svc_name
+
+    def probe(self, host: Host, port: Port) -> ProbeResult:
+        tls = port.number in self.tls_ports
+        data, err = _recv_banner_maybe_tls(self.scope, self.config, host.ip,
+                                           port.number, tls)
+        if data is None:
+            return ProbeResult(error=err)
+        banner = data.decode("latin-1", "replace").strip()
+        prod, ver = banner_product_version(banner)
+        port.service.name = self.svc_name
+        port.service.banner = banner[:200]
+        if prod:
+            port.service.product = prod
+        if ver:
+            port.service.version = ver
+        if prod or ver:
+            port.service.confidence = Confidence.HIGH
+        return ProbeResult(data={self.svc_name: {"banner": banner[:200],
+                                                 "product": prod, "version": ver}})
+
+
+class FTPProbe(_BannerVersionProbe):
+    name = "ftp"
+    svc_name = "ftp"
+    ports = (21,)
+    tls_ports = (990,)
+
+
+class IMAPProbe(_BannerVersionProbe):
+    name = "imap"
+    svc_name = "imap"
+    ports = (143,)
+    tls_ports = (993,)
+
+
+class POP3Probe(_BannerVersionProbe):
+    name = "pop3"
+    svc_name = "pop3"
+    ports = (110,)
+    tls_ports = (995,)
 
 
 class SSHProbe(ServiceProbe):
@@ -305,8 +418,32 @@ class DatabaseProbe(ServiceProbe):
             elif data and b"NOAUTH" in data:
                 info["unauthenticated"] = False
 
+        # MySQL/MariaDB send their version in cleartext in the initial handshake.
+        elif product == "mysql":
+            data, _ = _recv_banner(self.scope, self.config, host.ip, port.number,
+                                   read=256)
+            if data:
+                mprod, mver = parse_mysql_greeting(data)
+                if mver:
+                    product = mprod
+                    info["version"] = mver
+                    port.service.product = mprod
+                    port.service.version = mver
+                    port.service.confidence = Confidence.HIGH
+            port.service.name = product
+            findings.append(Finding(
+                title=f"Database service exposed: {product}", asset=f"{host.ip}:{port.number}",
+                evidence=f"open port {port.number}" + (f"; version {info.get('version')}"
+                                                       if info.get("version") else ""),
+                description=f"A {product} database service is listening.",
+                why_it_matters="Database ports reachable from untrusted networks are high-value targets.",
+                severity=Severity.MEDIUM, confidence=Confidence.MEDIUM,
+                impact="Potential data exposure if authentication/network controls are weak.",
+                remediation="Bind to internal interfaces, require strong auth, firewall the port. Do not expose publicly.",
+                validation=ValidationState.OBSERVED, source="database-probe", category="exposure",
+            ))
         # Elasticsearch: safe GET / (delegated to HTTP probe usually) — mark exposure.
-        elif product in ("mongodb", "mssql", "postgresql", "mysql", "memcached"):
+        elif product in ("mongodb", "mssql", "postgresql", "memcached"):
             port.service.name = product
             findings.append(Finding(
                 title=f"Database service exposed: {product}", asset=f"{host.ip}:{port.number}",
