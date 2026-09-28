@@ -24,6 +24,7 @@ from .discovery import DiscoveryEngine
 from .dns_recon import ReverseDNS
 from .models import HostStatus
 from .ports import PortScanner, effective_timeout
+from .progress import Progress
 from .roles import classify, detect_anomalies
 from .probers import build_generic, build_probes
 from .report import ReportGenerator
@@ -56,6 +57,7 @@ class AssessmentEngine:
         self.nuclei = self._build_nuclei(config)
         self.orch = Orchestrator(config)
         self._log = log or (lambda *a, **k: None)
+        self.progress = Progress(enabled=getattr(config, "show_progress", True))
 
     def _build_nuclei(self, config: Config):
         if not config.nuclei:
@@ -95,34 +97,86 @@ class AssessmentEngine:
         hosts = self.scope.expand_hosts()
         self._log(f"[scope] {len(hosts)} in-scope host(s) authorized")
 
-        self._phase_discovery(hosts)
-        self._save()
-        self._phase_rdns()
-        self._save()
-        self._phase_portscan()
-        self._save()
-        self._phase_service_id()
-        self._phase_probe()
-        self._save()
-        self._phase_content()
-        self._save()
-        self._phase_vhost()
-        self._save()
-        self._phase_nuclei()
-        self._save()
-        self._phase_udp()
-        self._save()
-        self._phase_domains()
-        self._save()
-        self._phase_vuln()
-        self._save()
-        self._phase_cve()
-        self._save()
-        self._phase_validate()
-        self._save()
-        self._phase_roles()
-        self._save()
+        # Ordered plan. Only enabled stages are listed/run, so the [k/N] counts
+        # and the plan the operator sees reflect what will actually happen.
+        stages = [
+            ("Host discovery",             lambda: self._phase_discovery(hosts), True,  self._sum_discovery),
+            ("Reverse DNS",                self._phase_rdns,        True,                self._sum_rdns),
+            ("Port scan",                  self._phase_portscan,    True,                self._sum_ports),
+            ("Service identification",     self._phase_service_id,  True,                self._sum_services),
+            ("Service & protocol probes",  self._phase_probe,       True,                self._sum_http),
+            ("Web content discovery",      self._phase_content,     self.content is not None, self._sum_content),
+            ("Virtual-host discovery",     self._phase_vhost,       self.vhost is not None,   self._sum_vhost),
+            ("Nuclei templates",           self._phase_nuclei,      self.nuclei is not None,  None),
+            ("UDP scan",                   self._phase_udp,         self.udp is not None,     self._sum_udp),
+            ("Domain collection",          self._phase_domains,     True,                self._sum_domains),
+            ("Vulnerability heuristics",   self._phase_vuln,        True,                None),
+            ("CVE correlation",            self._phase_cve,         self.cve is not None, self._sum_cve),
+            ("Validation & assessment",    self._phase_validate,    getattr(self.config, "validate", True), None),
+            ("Role & anomaly analysis",    self._phase_roles,       True,                self._sum_roles),
+        ]
+        active = [(label, fn, summ) for label, fn, enabled, summ in stages if enabled]
+        self.progress.set_plan([label for label, _, _ in active])
+
+        for i, (label, fn, summ) in enumerate(active, 1):
+            self.progress.reset_counter()
+            self.progress.stage_start(i, label)
+            fn()
+            summary = ""
+            if summ is not None:
+                try:
+                    summary = summ()
+                except Exception:
+                    summary = ""
+            self.progress.stage_done(i, label, summary)
+            self._save()
         return self.graph
+
+    # -- stage summaries (short, shown on the DONE line) ------------------ #
+    def _sum_discovery(self) -> str:
+        return f"{len(self.graph.live_hosts())} live host(s)"
+
+    def _sum_rdns(self) -> str:
+        n = sum(1 for h in self.graph.hosts.values() if h.hostnames)
+        return f"{n} host(s) with a name"
+
+    def _sum_ports(self) -> str:
+        n = sum(len(h.open_ports()) for h in self.graph.hosts.values())
+        hosts = sum(1 for h in self.graph.hosts.values() if h.open_ports())
+        return f"{n} open port(s) across {hosts} host(s)"
+
+    def _sum_services(self) -> str:
+        n = sum(len(h.open_ports()) for h in self.graph.hosts.values())
+        return f"{n} service(s) identified"
+
+    def _sum_http(self) -> str:
+        return f"{len(self.graph.all_http_services())} web service(s)"
+
+    def _sum_content(self) -> str:
+        n = sum(len(s.discovered_paths) for _h, s in self.graph.all_http_services())
+        return f"{n} path(s) discovered"
+
+    def _sum_vhost(self) -> str:
+        total = sum(len(h.domains) for h in self.graph.hosts.values())
+        return f"{total} hostname(s) known"
+
+    def _sum_udp(self) -> str:
+        n = sum(1 for h in self.graph.hosts.values()
+                for p in h.udp_ports.values() if p.state.value == "open")
+        return f"{n} open UDP port(s)"
+
+    def _sum_domains(self) -> str:
+        total = sum(len(h.domains) for h in self.graph.hosts.values())
+        return f"{total} hostname(s)"
+
+    def _sum_cve(self) -> str:
+        n = sum(1 for _h, f in self.graph.all_findings()
+                if f.category == "known-vulnerability")
+        return f"{n} CVE lead(s)"
+
+    def _sum_roles(self) -> str:
+        n = sum(1 for h in self.graph.hosts.values() if h.primary_role)
+        return f"{n} host(s) classified"
 
     # -- phases ----------------------------------------------------------- #
     def _phase_discovery(self, ips: list[str]):
@@ -239,10 +293,11 @@ class AssessmentEngine:
             if not ran_any:
                 self._run_probe_safe(self.generic, host, port)
 
+        total = len(tasks)
         with ThreadPoolExecutor(max_workers=max(2, self.config.concurrency // 4)) as pool:
             futures = [pool.submit(run_task, t) for t in tasks]
             for _ in as_completed(futures):
-                pass
+                self.progress.bump(total, "services tested")
         self._log(f"[probe] complete — {len(self.graph.all_http_services())} "
                   "HTTP service(s) analysed")
 
@@ -276,23 +331,22 @@ class AssessmentEngine:
                   f"service(s) via {backend}…")
 
         added = 0
-        for host, svc in services:
+        total = len(services)
+        for idx, (host, svc) in enumerate(services, 1):
             # Mandatory scope gate before handing a target to any tool.
-            if not self.scope.authorize(host.ip, svc.port).allowed:
-                continue
-            try:
-                if use_ferox:
-                    findings = self._run_ferox(host, svc)
-                else:
-                    findings = self.content.scan_service(host, svc)
-            except Exception as exc:
-                host.notes.append(f"content discovery error on {svc.port}: {exc}")
-                continue
-            for f in findings:
-                before = len(host.findings)
-                host.add_finding(f)
-                if len(host.findings) > before:
-                    added += 1
+            if self.scope.authorize(host.ip, svc.port).allowed:
+                try:
+                    findings = (self._run_ferox(host, svc) if use_ferox
+                                else self.content.scan_service(host, svc))
+                except Exception as exc:
+                    host.notes.append(f"content discovery error on {svc.port}: {exc}")
+                    findings = []
+                for f in findings:
+                    before = len(host.findings)
+                    host.add_finding(f)
+                    if len(host.findings) > before:
+                        added += 1
+            self.progress.items(idx, total, "web services")
         self._log(f"[content] {added} path finding(s) added")
 
     def _run_ferox(self, host, svc):
@@ -322,7 +376,8 @@ class AssessmentEngine:
         self._log(f"[vhost] probing TLS SAN/CN hostnames across "
                   f"{len(services)} service(s)…")
         added = 0
-        for host, svc in services:
+        total = len(services)
+        for idx, (host, svc) in enumerate(services, 1):
             try:
                 for f in self.vhost.probe_service(host, svc):
                     before = len(host.findings)
@@ -331,6 +386,7 @@ class AssessmentEngine:
                         added += 1
             except Exception as exc:
                 host.notes.append(f"vhost probe error on {svc.port}: {exc}")
+            self.progress.items(idx, total, "TLS services")
         self._log(f"[vhost] {added} distinct virtual host(s) discovered")
 
     def _phase_nuclei(self):
@@ -377,7 +433,8 @@ class AssessmentEngine:
         self._log(f"[udp] scanning {len(ports)} UDP port(s) on {len(targets)} host(s)…")
         open_count = 0
         findings = 0
-        for ip in targets:
+        total = len(targets)
+        for idx, ip in enumerate(targets, 1):
             results = self.udp.scan_host(ip, ports)
             host = self.graph.get_or_create(ip)
             for p in results:
@@ -389,6 +446,7 @@ class AssessmentEngine:
                     host.add_finding(f)
                     if len(host.findings) > before:
                         findings += 1
+            self.progress.items(idx, total, "hosts")
         self._log(f"[udp] {open_count} open UDP port(s), {findings} finding(s) added")
 
     def _phase_domains(self):
@@ -486,6 +544,10 @@ class AssessmentEngine:
     def _progress(self, label):
         def cb(done, total):
             pct = int(done * 100 / total) if total else 100
-            sys.stdout.write(f"\r[{label}] {done}/{total} ({pct}%)")
+            remaining = max(0, total - done)
+            sys.stdout.write(f"\r[{label}] {done}/{total} ({pct}%) - "
+                             f"{remaining} remaining     ")
+            if done >= total:
+                sys.stdout.write("\n")
             sys.stdout.flush()
         return cb

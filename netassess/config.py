@@ -126,6 +126,7 @@ class Config:
 
     # --- misc -------------------------------------------------------------
     deep: bool = False                # enable heavier (still safe) probes
+    show_progress: bool = True        # print the staged plan + live progress
 
     def effective_ports(self) -> list[int]:
         if self.full_port_scan:

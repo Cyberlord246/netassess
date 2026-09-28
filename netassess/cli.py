@@ -117,6 +117,8 @@ def _build_config(args) -> Config:
         cfg.vhost_probe = False
     if getattr(args, "no_validate", False):
         cfg.validate = False
+    if getattr(args, "no_progress", False):
+        cfg.show_progress = False
     if getattr(args, "auth_config", None):
         cfg.auth_config = args.auth_config
         cfg.validation_credentialed = True
@@ -419,6 +421,8 @@ def _add_scan_args(sp: argparse.ArgumentParser):
     sp.add_argument("--no-vhosts", dest="no_vhosts", action="store_true",
                     help="disable virtual-host discovery (it runs by default: probes "
                          "TLS SAN/CN hostnames via SNI+Host on the same in-scope IP)")
+    sp.add_argument("--no-progress", dest="no_progress", action="store_true",
+                    help="suppress the staged plan + live progress output")
     sp.add_argument("--no-validate", dest="no_validate", action="store_true",
                     help="disable the validation layer (it runs by default: safe, "
                          "non-destructive assessment of candidate findings)")
