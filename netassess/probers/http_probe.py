@@ -39,6 +39,14 @@ SECURITY_HEADERS = [
 _DISCLOSURE_HEADERS = ["server", "x-powered-by", "x-aspnet-version",
                        "x-aspnetmvc-version", "x-generator"]
 
+# Default/sample page title signatures (lowercased substrings).
+_DEFAULT_PAGE_TITLES = [
+    "welcome to nginx", "apache2 ubuntu default page", "apache2 debian default",
+    "test page for the apache", "it works!", "iis windows server",
+    "iis7", "welcome to caddy", "apache tomcat", "xampp", "wampserver",
+    "default web site page", "welcome to your new website", "lighttpd",
+]
+
 
 class HTTPProbe(ServiceProbe):
     name = "http"
@@ -67,6 +75,7 @@ class HTTPProbe(ServiceProbe):
         svc.technologies = detect_technologies(svc)
 
         findings = self._evaluate(host, port, svc)
+        findings += self._misconfig_checks(host, port, svc)
         host.http_services.append(svc)
         return ProbeResult(data={"http": svc.to_dict()}, findings=findings)
 
@@ -147,6 +156,106 @@ class HTTPProbe(ServiceProbe):
             except (http.client.HTTPException, ssl.SSLError, socket.timeout,
                     OSError) as exc:
                 return None
+
+    def _request_method(self, ip, scheme, port, host_header, method):
+        """Send one request with an arbitrary method; return (status, headers, body).
+        Read-only: OPTIONS/TRACE don't change server state."""
+        with self.scope.slot(ip, port) as s:
+            if not s.allowed:
+                return None
+            try:
+                if scheme == "https":
+                    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE
+                    conn = http.client.HTTPSConnection(
+                        ip, port, timeout=self.config.timeout, context=ctx)
+                else:
+                    conn = http.client.HTTPConnection(
+                        ip, port, timeout=self.config.timeout)
+                conn.request(method, "/", headers={
+                    "Host": host_header,
+                    "User-Agent": "netassess/1.0 (authorized security assessment)",
+                    "Connection": "close"})
+                resp = conn.getresponse()
+                body = resp.read(4096)
+                hdrs = {k.lower(): v for k, v in resp.getheaders()}
+                status = resp.status
+                conn.close()
+                return status, hdrs, body
+            except (http.client.HTTPException, ssl.SSLError, socket.timeout, OSError):
+                return None
+
+    def _misconfig_checks(self, host: Host, port: Port, svc: HTTPService) -> list[Finding]:
+        """HTTP server misconfigurations (excludes cookie flags / CORS / missing
+        security headers / CSP / clickjacking by design)."""
+        ip, num, scheme = host.ip, port.number, svc.scheme
+        host_header = host.hostnames[0] if host.hostnames else ip
+        asset = f"{ip}:{num}"
+        out: list[Finding] = []
+        title = svc.title or ""
+
+        # 1) directory listing / autoindex
+        if re.match(r"^\s*Index of /", title, re.I) or "Directory listing for" in title:
+            out.append(Finding(
+                title="Directory listing enabled", asset=asset,
+                evidence=f"{svc.url} title: {title!r}",
+                description="The web server returns an auto-generated directory index.",
+                why_it_matters="Directory listing discloses files/structure attackers "
+                               "can use to find sensitive content.",
+                severity=Severity.MEDIUM, confidence=Confidence.HIGH,
+                remediation="Disable auto-indexing (e.g. Options -Indexes / autoindex off).",
+                validation=ValidationState.CONFIRMED, source="http-probe",
+                category="http-misconfig"))
+
+        # 2) default / sample server page
+        if any(sig in title.lower() for sig in _DEFAULT_PAGE_TITLES):
+            out.append(Finding(
+                title="Default/sample web server page exposed", asset=asset,
+                evidence=f"{svc.url} title: {title!r}",
+                description="The service serves a default install or sample page.",
+                why_it_matters="Default pages indicate an unconfigured/forgotten server "
+                               "and often ship sample apps with known issues.",
+                severity=Severity.LOW, confidence=Confidence.HIGH,
+                remediation="Replace/remove default and sample content; harden the install.",
+                validation=ValidationState.CONFIRMED, source="http-probe",
+                category="http-misconfig"))
+
+        # 3) dangerous HTTP methods (via OPTIONS Allow header) — read-only
+        r = self._request_method(ip, scheme, num, host_header, "OPTIONS")
+        if r:
+            allow = (r[1].get("allow", "") or "").upper()
+            dangerous = [m for m in ("PUT", "DELETE", "PATCH", "PROPFIND",
+                                     "PROPPATCH", "MKCOL", "COPY", "MOVE", "LOCK",
+                                     "UNLOCK") if m in allow]
+            if dangerous:
+                out.append(Finding(
+                    title="Dangerous HTTP methods enabled", asset=asset,
+                    evidence=f"Allow: {r[1].get('allow', '')}",
+                    description="The server advertises write/WebDAV methods via OPTIONS.",
+                    why_it_matters="Methods like PUT/DELETE/WebDAV can allow file upload, "
+                                   "deletion or defacement if not tightly restricted.",
+                    severity=Severity.MEDIUM, confidence=Confidence.MEDIUM,
+                    remediation="Disable unused methods; restrict WebDAV to authenticated use.",
+                    validation=ValidationState.OBSERVED, source="http-probe",
+                    category="http-methods"))
+
+        # 4) HTTP TRACE (Cross-Site Tracing) — read-only
+        t = self._request_method(ip, scheme, num, host_header, "TRACE")
+        if t and t[0] == 200 and (
+                "message/http" in (t[1].get("content-type", "").lower())
+                or b"TRACE " in t[2][:64].upper()):
+            out.append(Finding(
+                title="HTTP TRACE method enabled (Cross-Site Tracing)", asset=asset,
+                evidence=f"TRACE returned HTTP 200 ({t[1].get('content-type','')})",
+                description="The server responds to TRACE and echoes the request.",
+                why_it_matters="TRACE enables Cross-Site Tracing (XST), which can expose "
+                               "headers/cookies in some attack chains.",
+                severity=Severity.LOW, confidence=Confidence.HIGH,
+                remediation="Disable the TRACE method (TraceEnable off).",
+                validation=ValidationState.CONFIRMED, source="http-probe",
+                category="http-methods"))
+        return out
 
     def _tls_from_conn(self, conn) -> TLSInfo | None:
         try:
