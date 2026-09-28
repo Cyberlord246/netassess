@@ -284,13 +284,17 @@ class AssessmentEngine:
             if host is None or task.port not in host.ports:
                 return
             port = host.ports[task.port]
-            ran_any = False
+            confirmed = False
             for probe in self.probes:
                 if not probe.matches(port):
                     continue
-                ran_any = True
-                self._run_probe_safe(probe, host, port)
-            if not ran_any:
+                # a probe "confirms" when it identifies the service without error;
+                # e.g. an HTTP GET that fails on a non-web port does NOT confirm.
+                if self._run_probe_safe(probe, host, port):
+                    confirmed = True
+            # nothing positively identified the service -> generic banner grab,
+            # so a port isn't left completely uncharacterised.
+            if not confirmed:
                 self._run_probe_safe(self.generic, host, port)
 
         total = len(tasks)
@@ -301,24 +305,43 @@ class AssessmentEngine:
         self._log(f"[probe] complete — {len(self.graph.all_http_services())} "
                   "HTTP service(s) analysed")
 
-    def _run_probe_safe(self, probe, host, port):
-        """Error-handling wrapper: capture, classify, never crash the pipeline."""
+    def _run_probe_safe(self, probe, host, port) -> bool:
+        """Run one probe; add its findings. Returns True if it positively
+        identified the service (no error), False otherwise. Never crashes."""
         try:
             result = probe.probe(host, port)
         except Exception as exc:  # defensive: a probe bug must not kill the run
             host.notes.append(f"probe {probe.name} error on {port.number}: {exc}")
-            return
+            return False
         if result.error:
-            return
+            return False
         for f in result.findings:
             host.add_finding(f)
+        return True
 
     def _phase_content(self):
         if self.content is None:
             return
         services = self.graph.all_http_services()
+
+        # Service-aware gate: content discovery applies ONLY to ports confirmed as
+        # HTTP/HTTPS by the probe stage. Summarise the non-web open ports we
+        # intentionally skip (they were assessed by their protocol probes).
+        web_ports = {(s.ip, s.port) for _h, s in services}
+        skipped: dict[str, int] = {}
+        for host in self.graph.hosts.values():
+            for p in host.open_ports():
+                if (host.ip, p.number) in web_ports:
+                    continue
+                proto = p.service.name or "unknown"
+                skipped[proto] = skipped.get(proto, 0) + 1
+
         if not services:
-            self._log("[content] no HTTP services to enumerate")
+            self._log("[content] no HTTP/HTTPS service identified — content "
+                      "discovery is not applicable to the open ports found")
+            if skipped:
+                self._log("[content] non-web ports assessed by protocol probes: "
+                          + ", ".join(f"{k}×{v}" for k, v in sorted(skipped.items())))
             return
 
         use_ferox = self.ferox is not None and self.ferox.available()
@@ -327,8 +350,13 @@ class AssessmentEngine:
                       "falling back to built-in probe")
 
         backend = "feroxbuster" if use_ferox else "built-in"
-        self._log(f"[content] enumerating web content on {len(services)} "
-                  f"service(s) via {backend}…")
+        web_list = ", ".join(sorted(f"{ip}:{port}" for ip, port in web_ports))
+        self._log(f"[content] {len(services)} web service(s) qualify for content "
+                  f"discovery: {web_list}")
+        if skipped:
+            self._log(f"[content] skipping {sum(skipped.values())} non-web port(s): "
+                      + ", ".join(f"{k}×{v}" for k, v in sorted(skipped.items())))
+        self._log(f"[content] enumerating web content via {backend}…")
 
         from .content_discovery import _vhost_of
         added = 0

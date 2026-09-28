@@ -226,6 +226,73 @@ def test_content_vhost_routes_by_host_header():
         srv.shutdown()
 
 
+def test_is_probably_http_is_service_aware():
+    from ..services import is_probably_http
+    from ..models import Port, PortState, Service
+
+    def mk(num, name):
+        return Port(number=num, state=PortState.OPEN, service=Service(name=name))
+
+    # odd/unknown/HTTP-API ports -> attempt HTTP identification
+    assert is_probably_http(mk(7999, "irdmi"))       # nmap port-table mislabel
+    assert is_probably_http(mk(9999, "unknown"))
+    assert is_probably_http(mk(2375, "docker"))      # HTTP API
+    assert is_probably_http(mk(9200, "elasticsearch"))
+    # known non-HTTP protocols -> do NOT HTTP-probe
+    assert not is_probably_http(mk(22, "ssh"))
+    assert not is_probably_http(mk(3306, "mysql"))
+    assert not is_probably_http(mk(53, "dns"))
+    assert not is_probably_http(mk(5432, "postgresql"))
+
+
+def test_odd_web_port_is_http_identified_and_content_discovered():
+    """A web app on a non-standard port that nmap labels as a non-HTTP service
+    (e.g. 7999 -> 'irdmi') must still be HTTP-identified and content-discovered."""
+    from ..engine import AssessmentEngine
+    from ..models import Confidence, Port, PortState, Service
+
+    class _H(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path.rstrip("/") == "/dashboard":
+                body, code = b"<title>Dash</title>", 200
+            else:
+                body, code = b"nf", 404
+            self.send_response(code)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    port = srv.server_address[1]
+    try:
+        cfg = Config(targets=["127.0.0.1"], ports=[port], skip_discovery=True,
+                     content_discovery=True, timeout=2.0, output_dir="/tmp/na-odd")
+        eng = AssessmentEngine(cfg, log=lambda *a, **k: None)
+        eng.content.paths = [("dashboard", "common", Severity.MEDIUM)]
+        eng._phase_discovery(["127.0.0.1"])
+        # simulate nmap's port-table naming this non-HTTP
+        eng.graph.get_or_create("127.0.0.1").ports[port] = Port(
+            number=port, state=PortState.OPEN,
+            service=Service(name="irdmi", confidence=Confidence.LOW))
+        eng._phase_service_id()
+        eng._phase_probe()
+        eng._phase_content()
+        host = eng.graph.get("127.0.0.1")
+        assert host.ports[port].service.name == "http"        # relabelled
+        assert (host.ip, port) in {(s.ip, s.port)
+                                   for _h, s in eng.graph.all_http_services()}
+        paths = [d["path"] for s in host.http_services for d in s.discovered_paths]
+        assert "/dashboard" in paths
+    finally:
+        srv.shutdown()
+
+
 def _run_all():
     fns = [v for k, v in globals().items() if k.startswith("test_")]
     for fn in fns:

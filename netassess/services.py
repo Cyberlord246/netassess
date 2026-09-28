@@ -30,6 +30,21 @@ PORT_HINTS: dict[int, str] = {
 HTTP_SERVICES = {"http", "https", "http-alt", "http-proxy", "https-alt"}
 TLS_SERVICES = {"https", "https-alt", "smtps", "imaps", "pop3s", "ldaps"}
 
+# Service names that speak a well-known NON-HTTP protocol and have their own
+# dedicated prober. A port labelled with one of these will not be HTTP-probed.
+# (Note: docker/kibana/elasticsearch/winrm ARE HTTP APIs, so they are absent.)
+NON_HTTP_SERVICES = {
+    "ssh", "telnet", "ftp", "ftp-data", "tftp",
+    "smtp", "smtps", "smtp-submission", "submission",
+    "pop3", "pop3s", "imap", "imaps",
+    "dns", "domain", "snmp", "ntp",
+    "smb", "microsoft-ds", "netbios-ssn", "netbios-ns", "msrpc", "rpcbind", "nfs",
+    "ldap", "ldaps", "kerberos", "kerberos-sec",
+    "mysql", "postgresql", "mssql", "ms-sql-s", "oracle",
+    "redis", "mongodb", "memcached",
+    "rdp", "ms-wbt-server", "vnc", "rsync",
+}
+
 # banner signatures -> (service, product regex for version extraction)
 _BANNER_SIGS: list[tuple[re.Pattern, str, str]] = [
     (re.compile(r"^SSH-([\d.]+)-(.+)", re.I), "ssh", r"SSH-[\d.]+-(.+)"),
@@ -82,6 +97,24 @@ def is_http(port: Port) -> bool:
         return True
     # common alt ports even if unnamed
     return port.number in (80, 443, 3000, 5601, 8000, 8080, 8443, 8888, 9200)
+
+
+def is_probably_http(port: Port) -> bool:
+    """Should we attempt an HTTP identification GET on this open port?
+
+    True for known web ports/names, for unidentified ports, and for any port
+    whose (often low-confidence, port-table-derived) name is NOT a known
+    non-HTTP protocol. This is *identification*, not content discovery: the GET
+    fails gracefully on non-HTTP ports and only a confirmed HTTP response leads
+    to content discovery. It exists so genuine web services on odd ports (e.g.
+    7999 labelled 'irdmi' by nmap) are not missed.
+    """
+    if is_http(port):
+        return True
+    name = (port.service.name or "").lower()
+    if name in ("", "unknown"):
+        return True
+    return name not in NON_HTTP_SERVICES
 
 
 def is_tls(port: Port) -> bool:

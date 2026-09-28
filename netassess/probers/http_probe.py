@@ -18,7 +18,7 @@ from ..models import (
     Confidence, Finding, Host, HTTPService, Port, Severity, TLSInfo,
     ValidationState,
 )
-from ..services import default_scheme, is_http
+from ..services import default_scheme, is_http, is_probably_http
 from .base import ProbeResult, ServiceProbe
 
 _TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.I | re.S)
@@ -52,10 +52,12 @@ class HTTPProbe(ServiceProbe):
     name = "http"
 
     def matches(self, port: Port) -> bool:
-        # Known web ports, or any open port that no other prober identified —
-        # unlabeled services are very often HTTP on non-standard ports. The GET
-        # probe fails gracefully if the port does not speak HTTP.
-        return is_http(port) or port.service.name in ("", "unknown")
+        # Attempt HTTP identification on known web ports, unidentified ports, and
+        # any port not labelled as a known non-HTTP protocol. This catches web
+        # apps on odd ports (e.g. 7999 that nmap's port table calls 'irdmi')
+        # that a fixed 80/443 rule would miss. The GET fails gracefully on
+        # non-HTTP ports, so nothing downstream treats them as web.
+        return is_probably_http(port)
 
     def probe(self, host: Host, port: Port) -> ProbeResult:
         ip, num = host.ip, port.number
@@ -73,6 +75,14 @@ class HTTPProbe(ServiceProbe):
 
         from ..techdetect import detect_technologies
         svc.technologies = detect_technologies(svc)
+
+        # Confirmed HTTP: stamp the real identity on the port so a low-confidence
+        # port-table guess (e.g. 'irdmi' on 7999) is corrected to http/https and
+        # the port is correctly treated as a web service downstream.
+        if not is_http(port) or port.service.name in ("", "unknown"):
+            port.service.name = "https" if svc.scheme == "https" else "http"
+            port.service.confidence = Confidence.HIGH
+            port.service.evidence = f"HTTP {svc.status} response to GET /"
 
         findings = self._evaluate(host, port, svc)
         findings += self._misconfig_checks(host, port, svc)
