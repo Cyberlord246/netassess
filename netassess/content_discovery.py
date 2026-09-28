@@ -375,8 +375,9 @@ class ContentDiscovery:
 
         hits.sort(key=lambda h: h["path"])
         svc.discovered_paths = [
-            {"path": "/" + h["path"], "status": h["status"], "length": h["length"],
-             "category": h["category"], "title": h["title"]} for h in hits]
+            {"path": "/" + h["path"], "url": h["url"], "status": h["status"],
+             "length": h["length"], "category": h["category"], "title": h["title"]}
+            for h in hits]
         return make_findings(f"{ip}:{port}", hits, source="content-discovery")
 
 
@@ -452,8 +453,10 @@ def make_findings(asset: str, hits: list[dict], source: str = "content-discovery
                 h.get("sev", Severity.LOW), h.get("title", ""), source))
     if grouped:
         grouped.sort(key=lambda x: x["path"])
-        listing = ", ".join(f"/{g['path'].lstrip('/')} ({g['status']})"
-                            for g in grouped)
+        # show the absolute URL (scheme://ip:port/path) for each discovered path
+        listing = ", ".join(
+            f"{g.get('url') or '/' + g['path'].lstrip('/')} ({g['status']})"
+            for g in grouped)
         findings.append(Finding(
             title="Reachable paths (content discovery)",
             asset=asset,

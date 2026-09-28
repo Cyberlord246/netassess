@@ -278,11 +278,13 @@ class HTMLReport:
                "<p class='note'>GET-only content discovery. Sensitive paths also "
                "appear under Findings.</p>"]
         for _h, s in services:
+            base = s.url.rstrip("/")
             out.append(f"<h3>{_esc(s.url)}</h3>")
-            out.append("<table><tr><th>Path</th><th>Status</th><th>Category</th>"
+            out.append("<table><tr><th>URL</th><th>Status</th><th>Category</th>"
                        "<th>Title</th></tr>")
             for p in sorted(s.discovered_paths, key=lambda x: x["path"]):
-                out.append(f"<tr><td class='mono'>{_esc(p['path'])}</td>"
+                url = p.get("url") or (base + p["path"])   # absolute location
+                out.append(f"<tr><td class='mono'>{_esc(url)}</td>"
                            f"<td>{_esc(p['status'])}</td>"
                            f"<td>{_esc(p['category'])}</td>"
                            f"<td>{_esc(p.get('title',''))}</td></tr>")

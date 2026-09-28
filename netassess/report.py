@@ -277,11 +277,13 @@ class ReportGenerator:
                  "Paths found via GET-only content discovery (all severities; "
                  "sensitive ones also appear under Findings).\n"]
         for _h, s in services:
+            base = s.url.rstrip("/")
             lines.append(f"\n### {s.url}")
-            lines.append("| Path | Status | Category |")
+            lines.append("| URL | Status | Category |")
             lines.append("|---|---|---|")
             for p in sorted(s.discovered_paths, key=lambda x: x["path"]):
-                lines.append(f"| `{p['path']}` | {p['status']} | {p['category']} |")
+                url = p.get("url") or (base + p["path"])   # absolute location
+                lines.append(f"| `{url}` | {p['status']} | {p['category']} |")
         return "\n".join(lines)
 
     def _tls_section(self) -> str:

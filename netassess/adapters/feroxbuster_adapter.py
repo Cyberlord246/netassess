@@ -131,7 +131,7 @@ class FeroxbusterAdapter(ToolAdapter):
                 continue
             seen.add(key)
             category, sev = categorize(path)
-            discovered.append({"path": "/" + path.lstrip("/"),
+            discovered.append({"path": "/" + path.lstrip("/"), "url": url,
                                "status": rec["status"],
                                "length": rec["content_length"],
                                "category": category, "title": ""})
