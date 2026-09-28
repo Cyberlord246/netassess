@@ -499,11 +499,44 @@ def _add_scan_args(sp: argparse.ArgumentParser):
                          "default (missing security headers, version disclosure)")
 
 
+def _clean_exit(code: int) -> int:
+    """Hand the terminal back to the shell deterministically.
+
+    All work (state.json + reports) is flushed to disk synchronously before we
+    get here. If a shelled-out tool (nmap/nuclei/feroxbuster) left a background
+    child, or a library left a non-daemon thread, the Python interpreter would
+    otherwise block at shutdown waiting on it and the prompt would never return.
+    When we detect such a lingering non-daemon thread, exit immediately rather
+    than hang. In the normal case (nothing lingering) we return as usual so
+    atexit handlers still run.
+    """
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:
+        pass
+    import threading
+    lingering = [t for t in threading.enumerate()
+                 if t is not threading.main_thread() and t.is_alive()
+                 and not t.daemon]
+    if lingering:
+        if os.environ.get("NETASSESS_DEBUG_EXIT"):
+            names = ", ".join(sorted(t.name for t in lingering))
+            print(f"[exit] {len(lingering)} lingering non-daemon thread(s) would "
+                  f"block shutdown; exiting now: {names}", file=sys.stderr)
+        os._exit(code if isinstance(code, int) else 0)
+    return code
+
+
 def main(argv=None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        return args.func(args)
+        code = args.func(args)
     except FileNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)
-        return 2
+        code = 2
+    except KeyboardInterrupt:
+        print("\ninterrupted", file=sys.stderr)
+        code = 130
+    return _clean_exit(code if isinstance(code, int) else 0)
