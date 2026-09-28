@@ -91,6 +91,45 @@ def test_scan_service_builds_graded_findings():
     assert admin.severity.value in ("low", "medium")
 
 
+def test_build_argv_pins_ip_and_sends_vhost_header():
+    a = FeroxbusterAdapter()
+    argv = a.build_argv("https://192.0.2.10:443/", "wl.txt",
+                        headers=["Host: admin.example.com"])
+    u = argv[argv.index("-u") + 1]
+    assert u == "https://192.0.2.10:443/"          # connect to the IP, not the name
+    assert "admin.example.com" not in u            # hostname never in the URL
+    assert "-H" in argv and "Host: admin.example.com" in argv
+
+
+def test_scan_service_vhost_pins_ip_uses_host_header_and_tags_asset():
+    from ..models import Host, HTTPService
+    a = FeroxbusterAdapter()
+    import netassess.adapters.feroxbuster_adapter as mod
+    from ..adapters.process import ProcResult
+    captured = {}
+
+    def fake_run(argv, *args, **kw):
+        captured["argv"] = argv
+        return ProcResult(ok=True, returncode=0, stdout=(
+            '{"type":"response","url":"https://192.0.2.10/panel","status":200,'
+            '"content_length":50}'), stderr="")
+
+    orig = mod.run
+    mod.run = fake_run
+    try:
+        host = Host(ip="192.0.2.10")
+        # a vhost service: URL carries the hostname, ip is the authorized IP
+        svc = HTTPService(url="https://admin.example.com:443/", ip="192.0.2.10",
+                          port=443, scheme="https")
+        _recs, findings, _res = a.scan_service(host, svc, wordlist="wl.txt")
+    finally:
+        mod.run = orig
+    argv = captured["argv"]
+    assert argv[argv.index("-u") + 1] == "https://192.0.2.10:443/"   # IP-pinned
+    assert "Host: admin.example.com" in argv                         # routed by header
+    assert findings and all("[admin.example.com]" in f.asset for f in findings)
+
+
 def _run_all():
     fns = [v for k, v in globals().items() if k.startswith("test_")]
     for fn in fns:

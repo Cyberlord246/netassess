@@ -50,6 +50,7 @@ class FeroxbusterAdapter(ToolAdapter):
     def build_argv(self, base_url: str, wordlist: str, *, threads: int = 40,
                    depth: int = 2, timeout: int = 7, rate: float = 0.0,
                    extensions: str = "", thorough: bool = False,
+                   headers: list[str] | None = None,
                    user_agent: str = "netassess/1.0 (authorized security assessment)"
                    ) -> list[str]:
         argv = [
@@ -68,6 +69,12 @@ class FeroxbusterAdapter(ToolAdapter):
             "--no-state",             # don't drop a .state file
             "--dont-scan", _DONT_SCAN,
         ]
+        # Virtual-host scanning: keep the connection pinned to the authorized IP
+        # in `base_url`, but present the vhost via an explicit Host header so
+        # name-based vhosts route correctly. We never put the hostname in the URL
+        # (that would resolve/connect to a possibly out-of-scope IP).
+        for hv in (headers or []):
+            argv += ["-H", hv]
         if extensions:
             argv += ["-x", extensions.replace(" ", "")]
         if rate and rate > 0:
@@ -114,15 +121,23 @@ class FeroxbusterAdapter(ToolAdapter):
                      ) -> tuple[list[dict], list[Finding], ProcResult]:
         from ..content_discovery import categorize, make_findings
 
-        base_url = svc.url if svc.url.endswith("/") else svc.url + "/"
+        # Always connect to the authorized IP:port. If this service is a virtual
+        # host (its URL carries a hostname, not the IP), route it with a Host
+        # header instead of ever connecting to the hostname directly.
+        base_url = f"{svc.scheme}://{svc.ip}:{svc.port}/"
+        headers: list[str] = []
+        vhost = _vhost_of(svc)
+        if vhost:
+            headers.append(f"Host: {vhost}")
         argv = self.build_argv(base_url, wordlist, threads=threads, depth=depth,
                                timeout=timeout, rate=rate, extensions=extensions,
-                               thorough=thorough)
+                               thorough=thorough, headers=headers)
         res = run(argv, timeout=run_timeout)
         # feroxbuster exits non-zero in some benign cases; parse whatever JSON exists
         records = self.parse_json(res.stdout) if res.stdout else []
 
-        asset = f"{host.ip}:{svc.port}"
+        # attribute vhost paths to the vhost so they don't merge with the default site
+        asset = f"{host.ip}:{svc.port}" + (f" [{vhost}]" if vhost else "")
         discovered: list[dict] = []
         hits: list[dict] = []
         seen: set[str] = set()
@@ -153,3 +168,17 @@ class FeroxbusterAdapter(ToolAdapter):
 def _path_of(url: str) -> str:
     from urllib.parse import urlparse
     return urlparse(url).path.lstrip("/") or "/"
+
+
+def _vhost_of(svc) -> str:
+    """Return the vhost hostname if this service's URL is name-based (not the IP)."""
+    from urllib.parse import urlparse
+    import ipaddress
+    host = urlparse(svc.url).hostname or ""
+    if not host or host == svc.ip:
+        return ""
+    try:
+        ipaddress.ip_address(host)
+        return ""            # a bare IP URL is not a vhost
+    except ValueError:
+        return host

@@ -324,7 +324,14 @@ class ContentDiscovery:
     # -- per-service scan (pool of reused connections) ------------------- #
     def scan_service(self, host: Host, svc: HTTPService) -> list[Finding]:
         ip, port, scheme = svc.ip, svc.port, svc.scheme
-        host_header = host.hostnames[0] if host.hostnames else ip
+        # Virtual host: connect to the authorized IP (svc.ip) but present the
+        # vhost via the Host header so name-based vhosts route correctly. Never
+        # connect to the hostname itself (it could resolve out of scope).
+        vhost = _vhost_of(svc, ip)
+        if vhost:
+            host_header = vhost
+        else:
+            host_header = host.hostnames[0] if host.hostnames else ip
         soft404, base_len = self._baseline(ip, port, scheme, host_header)
 
         q: "Queue" = Queue()
@@ -380,7 +387,8 @@ class ContentDiscovery:
             {"path": "/" + h["path"], "url": h["url"], "status": h["status"],
              "length": h["length"], "category": h["category"], "title": h["title"]}
             for h in hits]
-        return make_findings(f"{ip}:{port}", hits, source="content-discovery")
+        asset = f"{ip}:{port}" + (f" [{vhost}]" if vhost else "")
+        return make_findings(asset, hits, source="content-discovery")
 
 
 
@@ -448,6 +456,20 @@ _STATIC_CT = ("text/css", "image/", "font/", "audio/", "video/",
               "application/font", "application/javascript", "application/x-font",
               "application/vnd.ms-fontobject")
 _REPRESENTATIVE = 3        # how many example URLs to show per group
+
+
+def _vhost_of(svc, ip: str) -> str:
+    """Return the vhost hostname if svc's URL is name-based (not the IP)."""
+    import ipaddress
+    from urllib.parse import urlparse
+    host = urlparse(getattr(svc, "url", "") or "").hostname or ""
+    if not host or host == ip:
+        return ""
+    try:
+        ipaddress.ip_address(host)
+        return ""
+    except ValueError:
+        return host
 
 
 def _is_static(h: dict) -> bool:
