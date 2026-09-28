@@ -69,39 +69,65 @@ class VhostProber:
             out.append(n)
         return out
 
-    # -- minimal Host-header GET ------------------------------------------ #
-    def _get(self, ip: str, port: int, scheme: str, host_header: str):
+    # -- GET with explicit SNI + Host header ------------------------------ #
+    def _get(self, ip: str, port: int, scheme: str, host_header: str, sni=None):
+        """Connect to the authorized IP, but set the TLS SNI (server_hostname) and
+        the HTTP Host header to `sni`/`host_header`. This exercises BOTH SNI-based
+        and name-based virtual hosting. Connecting by IP means we never resolve or
+        leave the authorized target. `sni=None` sends no SNI (default backend)."""
         with self.scope.slot(ip, port) as s:
             if not s.allowed:
                 return None
+            sock = None
             try:
+                sock = socket.create_connection((ip, port), timeout=self.config.timeout)
                 if scheme == "https":
                     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
                     ctx.check_hostname = False
                     ctx.verify_mode = ssl.CERT_NONE
-                    conn = http.client.HTTPSConnection(
-                        ip, port, timeout=self.config.timeout, context=ctx)
-                else:
-                    conn = http.client.HTTPConnection(
-                        ip, port, timeout=self.config.timeout)
-                conn.request("GET", "/", headers={
-                    "Host": host_header,
-                    "User-Agent": "netassess/1.0 (authorized security assessment)",
-                    "Accept": "*/*", "Connection": "close",
-                })
-                resp = conn.getresponse()
-                body = resp.read(_MAX_BODY)
-                status = resp.status
-                loc = resp.getheader("Location", "")
-                conn.close()
-                title = ""
-                m = _TITLE_RE.search(body.decode("utf-8", "replace"))
-                if m:
-                    title = re.sub(r"\s+", " ", m.group(1)).strip()[:120]
-                return {"status": status, "len": len(body), "title": title,
-                        "loc": loc}
-            except (http.client.HTTPException, ssl.SSLError, socket.timeout, OSError):
+                    # SNI = sni (a hostname) or None (no SNI) — never the IP
+                    sock = ctx.wrap_socket(sock, server_hostname=(sni or None))
+                sock.settimeout(self.config.timeout)
+                req = (f"GET / HTTP/1.1\r\nHost: {host_header}\r\n"
+                       f"User-Agent: netassess/1.0 (authorized security assessment)\r\n"
+                       f"Accept: */*\r\nConnection: close\r\n\r\n")
+                sock.sendall(req.encode("latin-1"))
+                data = b""
+                while len(data) < _MAX_BODY:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        break
+                    data += chunk
+                return self._parse_http(data)
+            except (ssl.SSLError, socket.timeout, OSError):
                 return None
+            finally:
+                if sock is not None:
+                    try:
+                        sock.close()
+                    except OSError:
+                        pass
+
+    @staticmethod
+    def _parse_http(data: bytes):
+        if not data:
+            return None
+        head, _, body = data.partition(b"\r\n\r\n")
+        lines = head.split(b"\r\n")
+        try:
+            status = int(lines[0].split()[1])
+        except (IndexError, ValueError):
+            return None
+        loc = ""
+        for ln in lines[1:]:
+            if ln.lower().startswith(b"location:"):
+                loc = ln.split(b":", 1)[1].strip().decode("latin-1", "replace")
+                break
+        title = ""
+        m = _TITLE_RE.search(body.decode("utf-8", "replace"))
+        if m:
+            title = re.sub(r"\s+", " ", m.group(1)).strip()[:120]
+        return {"status": status, "len": len(body), "title": title, "loc": loc}
 
     def _differs(self, base, r) -> bool:
         if r is None:
@@ -126,10 +152,12 @@ class VhostProber:
         candidates = self._candidates(host, svc)
         if not candidates:
             return []
-        base = self._get(ip, port, scheme, ip)   # default (IP) vhost
+        # baseline = default backend (Host=IP, no SNI)
+        base = self._get(ip, port, scheme, ip, sni=None)
         findings: list[Finding] = []
         for name in candidates:
-            r = self._get(ip, port, scheme, name)
+            # set BOTH the TLS SNI and the HTTP Host header to the candidate
+            r = self._get(ip, port, scheme, name, sni=name)
             if not self._differs(base, r):
                 continue
             url = f"{scheme}://{name}:{port}/"
@@ -140,7 +168,7 @@ class VhostProber:
             findings.append(Finding(
                 title=f"Virtual host serves a distinct application: {name}",
                 asset=f"{ip}:{port}",
-                evidence=f"Host: {name} -> HTTP {r['status']}"
+                evidence=f"SNI+Host: {name} -> HTTP {r['status']}"
                          + (f", title={r['title']!r}" if r["title"] else "")
                          + " (differs from default response)",
                 description=f"The certificate SAN/CN '{name}' resolves to a "

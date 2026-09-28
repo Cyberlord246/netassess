@@ -67,7 +67,7 @@ def test_probe_service_records_distinct_vhost(monkeypatch=None):
         "192.0.2.10": {"status": 200, "len": 500, "title": "It works", "loc": ""},
         "secret.example.com": {"status": 200, "len": 4000, "title": "Admin Console", "loc": ""},
     }
-    p._get = lambda ip, port, scheme, host_header: responses.get(host_header)
+    p._get = lambda ip, port, scheme, host_header, sni=None: responses.get(host_header)
     findings = p.probe_service(h, svc)
     assert len(findings) == 1
     assert "secret.example.com" in findings[0].title

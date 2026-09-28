@@ -83,7 +83,7 @@ class TLSProbe(ServiceProbe):
                 return None, "", "", "scope denied"
             try:
                 raw = socket.create_connection((ip, port), timeout=self.config.timeout)
-                with ctx.wrap_socket(raw, server_hostname=server_name or ip) as ss:
+                with ctx.wrap_socket(raw, server_hostname=(server_name or None)) as ss:
                     cert = ss.getpeercert() or {}
                     return cert, ss.version() or "", (ss.cipher() or ("", "", 0))[0], ""
             except (ssl.SSLError, socket.timeout, OSError) as exc:
@@ -136,7 +136,7 @@ class TLSProbe(ServiceProbe):
                     break
                 try:
                     raw = socket.create_connection((ip, port), timeout=self.config.timeout)
-                    with ctx.wrap_socket(raw, server_hostname=server_name or ip) as ss:
+                    with ctx.wrap_socket(raw, server_hostname=(server_name or None)) as ss:
                         offered.append(label)
                 except (ssl.SSLError, OSError):
                     pass
