@@ -109,7 +109,7 @@ class FeroxbusterAdapter(ToolAdapter):
                      rate: float = 0.0, extensions: str = "",
                      thorough: bool = False, run_timeout: float = 900.0
                      ) -> tuple[list[dict], list[Finding], ProcResult]:
-        from ..content_discovery import categorize, make_path_finding
+        from ..content_discovery import categorize, make_findings
 
         base_url = svc.url if svc.url.endswith("/") else svc.url + "/"
         argv = self.build_argv(base_url, wordlist, threads=threads, depth=depth,
@@ -121,7 +121,7 @@ class FeroxbusterAdapter(ToolAdapter):
 
         asset = f"{host.ip}:{svc.port}"
         discovered: list[dict] = []
-        findings: list[Finding] = []
+        hits: list[dict] = []
         seen: set[str] = set()
         for rec in records:
             url = rec["url"]
@@ -135,11 +135,12 @@ class FeroxbusterAdapter(ToolAdapter):
                                "status": rec["status"],
                                "length": rec["content_length"],
                                "category": category, "title": ""})
-            findings.append(make_path_finding(asset, path, url, rec["status"],
-                                              category, sev, "",
-                                              source="feroxbuster"))
+            hits.append({"path": path, "url": url, "status": rec["status"],
+                         "category": category, "sev": sev, "title": ""})
         discovered.sort(key=lambda x: x["path"])
         svc.discovered_paths = discovered
+        # high-value paths -> individual findings; generic ones -> one grouped entry
+        findings = make_findings(asset, hits, source="feroxbuster")
         return discovered, findings, res
 
 

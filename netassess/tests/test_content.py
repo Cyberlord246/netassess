@@ -80,6 +80,35 @@ def test_content_discovery_reuses_connection_across_many_paths():
         srv.shutdown()
 
 
+def test_generic_paths_grouped_high_value_individual():
+    from ..content_discovery import make_findings
+    from ..models import Severity
+    hits = [
+        {"path": ".env", "url": "http://h/.env", "status": 200,
+         "category": "secrets", "sev": Severity.HIGH, "title": ""},
+        {"path": "admin", "url": "http://h/admin", "status": 200,
+         "category": "admin", "sev": Severity.MEDIUM, "title": ""},
+        {"path": "Video/be", "url": "http://h/Video/be", "status": 302,
+         "category": "common", "sev": Severity.LOW, "title": ""},
+        {"path": "XML/bio", "url": "http://h/XML/bio", "status": 302,
+         "category": "common", "sev": Severity.LOW, "title": ""},
+        {"path": "old/", "url": "http://h/old/", "status": 200,
+         "category": "dir", "sev": Severity.LOW, "title": ""},
+    ]
+    fs = make_findings("206.15.204.180:80", hits, source="feroxbuster")
+    titles = [f.title for f in fs]
+    # high-value paths keep their own finding
+    assert any(".env" in t for t in titles)
+    assert any("admin" in t.lower() for t in titles)
+    # the 3 generic (common/dir) collapse into ONE "Reachable paths" finding
+    grouped = [f for f in fs if f.title == "Reachable paths (content discovery)"]
+    assert len(grouped) == 1
+    assert "3 path(s)" in grouped[0].evidence
+    assert "/Video/be" in grouped[0].evidence and "/old/" in grouped[0].evidence
+    # total = .env + admin + one grouped = 3 (not 5 separate)
+    assert len(fs) == 3
+
+
 def _run_all():
     fns = [v for k, v in globals().items() if k.startswith("test_")]
     for fn in fns:

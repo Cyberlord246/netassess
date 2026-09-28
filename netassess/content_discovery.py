@@ -333,6 +333,8 @@ class ContentDiscovery:
         discovered: list[dict] = []
         lock = threading.Lock()
 
+        hits: list[dict] = []
+
         def worker():
             conn = None               # this worker's own reused connection
             while True:
@@ -353,13 +355,10 @@ class ContentDiscovery:
                 if m:
                     title = re.sub(r"\s+", " ", m.group(1)).strip()[:120]
                 url = f"{scheme}://{ip}:{port}/{path}"
-                rec = {"path": "/" + path, "status": status, "length": length,
-                       "category": category, "title": title}
-                finding = self._to_finding(host, svc, path, url, status,
-                                           category, sev, title)
                 with lock:
-                    discovered.append(rec)
-                    findings.append(finding)
+                    hits.append({"path": path, "url": url, "status": status,
+                                 "length": length, "category": category,
+                                 "sev": sev, "title": title})
             if conn:
                 try:
                     conn.close()
@@ -373,13 +372,13 @@ class ContentDiscovery:
             t.start()
         for t in threads:
             t.join()
-        discovered.sort(key=lambda x: x["path"])
-        svc.discovered_paths = discovered
-        return findings
 
-    def _to_finding(self, host, svc, path, url, status, category, sev, title):
-        return make_path_finding(f"{host.ip}:{svc.port}", path, url, status,
-                                 category, sev, title, source="content-discovery")
+        hits.sort(key=lambda h: h["path"])
+        svc.discovered_paths = [
+            {"path": "/" + h["path"], "status": h["status"], "length": h["length"],
+             "category": h["category"], "title": h["title"]} for h in hits]
+        return make_findings(f"{ip}:{port}", hits, source="content-discovery")
+
 
 
 # Public helpers reused by external adapters (e.g. feroxbuster) so all content
@@ -430,6 +429,48 @@ def make_path_finding(asset: str, path: str, url: str, status: int,
                     else ValidationState.OBSERVED),
         source=source, category=f"content-{category}",
     )
+
+
+# low-signal categories: collapse into ONE "Reachable paths" finding per host,
+# instead of a separate finding per path. High-value categories stay individual.
+GROUPED_CATEGORIES = {"common", "dir", "info", "info-leak", "custom"}
+
+
+def make_findings(asset: str, hits: list[dict], source: str = "content-discovery"
+                  ) -> list[Finding]:
+    """Turn per-path hits into findings: high-value paths get their own finding;
+    generic/low-signal paths are grouped into a single 'Reachable paths' entry
+    per host listing all the endpoints."""
+    findings: list[Finding] = []
+    grouped: list[dict] = []
+    for h in hits:
+        if h["category"] in GROUPED_CATEGORIES:
+            grouped.append(h)
+        else:
+            findings.append(make_path_finding(
+                asset, h["path"], h["url"], h["status"], h["category"],
+                h.get("sev", Severity.LOW), h.get("title", ""), source))
+    if grouped:
+        grouped.sort(key=lambda x: x["path"])
+        listing = ", ".join(f"/{g['path'].lstrip('/')} ({g['status']})"
+                            for g in grouped)
+        findings.append(Finding(
+            title="Reachable paths (content discovery)",
+            asset=asset,
+            evidence=f"{len(grouped)} path(s): {listing}"[:1500],
+            description="Content discovery found additional reachable paths on this "
+                        "web service (generic/low-signal). Each is listed in the "
+                        "evidence with its HTTP status.",
+            why_it_matters="Reachable paths expand the attack surface; review for "
+                           "anything sensitive or unintended.",
+            severity=Severity.LOW, confidence=Confidence.MEDIUM,
+            impact="Additional reachable endpoints to review for authn/authz.",
+            remediation="Review the listed paths; restrict or remove any that "
+                        "should not be publicly reachable.",
+            validation=ValidationState.OBSERVED, source=source,
+            category="content-paths",
+        ))
+    return findings
 
 
 def _downgrade(sev: Severity) -> Severity:
