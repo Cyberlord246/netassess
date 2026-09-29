@@ -90,6 +90,9 @@ discovery), and `pip install "netassess[ai] @ git+..."` for the LLM mode.
 
 ## Usage
 
+See **[USAGE.md](USAGE.md)** for the full option reference, the web-vs-network
+profiles, and copy-paste recipes.
+
 ```bash
 netassess network scan --targets targets.txt --mode auto
 netassess network scan --targets 192.0.2.10,192.0.2.0/24 --content-discovery
