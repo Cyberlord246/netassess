@@ -170,14 +170,43 @@ def _logger(verbose: bool):
 def cmd_scan(args) -> int:
     cfg = _build_config(args)
     if not cfg.targets:
-        print("error: no targets provided (--targets FILE|IP,IP,CIDR)", file=sys.stderr)
+        print("error: no targets provided (--targets FILE|IP,IP,CIDR|hostname)",
+              file=sys.stderr)
+        return 2
+
+    # Resolve hostname/URL targets (a domain list is the common case) to IPs.
+    # Operator-provided names are authorised; their IPs become scope, and we keep
+    # name->IP so probes use the domain as Host/SNI and the report attributes it.
+    from .resolve import expand_targets
+    host_hostnames: dict = {}
+    rs = expand_targets(cfg.targets, timeout=cfg.timeout, concurrency=cfg.concurrency)
+    if rs.domains:
+        print(f" resolving   : {len(rs.domains)} domain(s) → {len(rs.ip_targets)} "
+              f"IP(s)" + (f"; {len(rs.unresolved)} unresolved" if rs.unresolved else ""))
+        if rs.unresolved:
+            shown = ", ".join(rs.unresolved[:8])
+            print(f"   unresolved: {shown}"
+                  + (f" (+{len(rs.unresolved) - 8} more)" if len(rs.unresolved) > 8 else ""))
+    if rs.changed:
+        cfg.targets = rs.ip_targets
+        host_hostnames = rs.host_map
+    if cfg.exclude:                     # resolve hostname exclusions too
+        ex = expand_targets(cfg.exclude, timeout=cfg.timeout,
+                            concurrency=cfg.concurrency)
+        if ex.changed:
+            cfg.exclude = ex.ip_targets
+    if not cfg.targets:
+        print("error: no targets resolved to an IP (all hostnames failed DNS)",
+              file=sys.stderr)
         return 2
 
     print("=" * 60)
     print(" netassess — authorized network attack-surface assessment")
     print("=" * 60)
     print(f" mode        : {cfg.mode}")
-    print(f" targets     : {', '.join(cfg.targets)}")
+    tdesc = ", ".join(cfg.targets[:6]) + (f" (+{len(cfg.targets) - 6} more)"
+                                          if len(cfg.targets) > 6 else "")
+    print(f" targets     : {tdesc}")
     if cfg.exclude:
         print(f" exclude     : {', '.join(cfg.exclude)}")
     _ports_desc = '1-65535' if cfg.full_port_scan else str(len(cfg.effective_ports())) + ' ports'
@@ -221,7 +250,7 @@ def cmd_scan(args) -> int:
         print(f" nuclei      : off")
     print("-" * 60)
 
-    engine = AssessmentEngine(cfg, log=_logger(True))
+    engine = AssessmentEngine(cfg, log=_logger(True), host_hostnames=host_hostnames)
     engine.run()
     paths = engine.report()
     print("-" * 60)

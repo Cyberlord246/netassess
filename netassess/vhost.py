@@ -56,6 +56,9 @@ class VhostProber:
             m = _CN_RE.search(tls.subject or "")
             if m:
                 names.append(m.group(1).strip())
+        # also probe any OTHER operator-provided domains that resolved to this IP
+        # (a domain list often maps many names to one IP — each is its own vhost)
+        names.extend(host.hostnames[1:] if len(host.hostnames) > 1 else [])
         already = {host.hostnames[0].lower() if host.hostnames else "", host.ip}
         out, seen = [], set()
         for n in names:

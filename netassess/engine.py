@@ -37,8 +37,10 @@ from .vuln import VulnAssessmentEngine
 
 
 class AssessmentEngine:
-    def __init__(self, config: Config, log=None):
+    def __init__(self, config: Config, log=None, host_hostnames=None):
         self.config = config
+        # {ip: [hostnames]} for user-provided domains that resolved to these IPs
+        self._provided_hostnames = host_hostnames or {}
         self.scope = ScopeEngine(config)
         self.graph = AssetGraph()
         self.graph.meta = {"mode": config.mode, "targets": config.targets}
@@ -96,6 +98,20 @@ class AssessmentEngine:
 
         hosts = self.scope.expand_hosts()
         self._log(f"[scope] {len(hosts)} in-scope host(s) authorized")
+
+        # seed operator-provided domain names onto their resolved IPs, so the HTTP
+        # probe uses them as Host/SNI, the vhost prober probes them, and findings
+        # are attributed back to the domain in the inventory
+        if self._provided_hostnames:
+            seeded = 0
+            for ip, names in self._provided_hostnames.items():
+                h = self.graph.get_or_create(ip)
+                for n in names:
+                    if n not in h.hostnames:
+                        h.hostnames.append(n)
+                        seeded += 1
+            self._log(f"[scope] seeded {seeded} provided hostname(s) across "
+                      f"{len(self._provided_hostnames)} resolved IP(s)")
 
         # Ordered plan. Only enabled stages are listed/run, so the [k/N] counts
         # and the plan the operator sees reflect what will actually happen.
@@ -231,7 +247,12 @@ class AssessmentEngine:
         recs = self.rdns.lookup_many(targets, concurrency=self.config.concurrency)
         for ip, rec in recs.items():
             if rec["hostnames"]:
-                self.graph.get_or_create(ip).hostnames = rec["hostnames"]
+                # merge PTR names with any operator-provided domains (keep the
+                # provided ones first; they drive Host/SNI selection)
+                names = self.graph.get_or_create(ip).hostnames
+                for hn in rec["hostnames"]:
+                    if hn not in names:
+                        names.append(hn)
 
     def _phase_portscan(self):
         targets = [h.ip for h in self.graph.hosts.values()
