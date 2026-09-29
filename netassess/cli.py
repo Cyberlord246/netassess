@@ -197,6 +197,16 @@ def cmd_scan(args) -> int:
     if rs.changed:
         cfg.targets = rs.ip_targets
         host_hostnames = rs.host_map
+
+    # Input-aware profile: a domain list is a web assessment; bare IPs/CIDRs are a
+    # network assessment. Adjust defaults the operator did not set explicitly.
+    profile = rs.profile()
+    if not (getattr(args, "no_rdns", False) or getattr(args, "rdns", False)):
+        # PTR enrichment is valuable for naming bare IPs, redundant for a domain
+        # list (forward names already known) — default it per profile.
+        cfg.reverse_dns = (profile != "web")
+    if getattr(args, "rdns", False):
+        cfg.reverse_dns = True
     if cfg.exclude:                     # resolve hostname exclusions too
         ex = expand_targets(cfg.exclude, timeout=cfg.timeout,
                             concurrency=cfg.concurrency)
@@ -211,6 +221,12 @@ def cmd_scan(args) -> int:
     print(" netassess — authorized network attack-surface assessment")
     print("=" * 60)
     print(f" mode        : {cfg.mode}")
+    _profile_desc = {
+        "web": "web (domain list — reverse-DNS off, hostnames used as Host/SNI)",
+        "network": "network (IPs/CIDRs — reverse-DNS on for host naming)",
+        "mixed": "mixed (domains + IPs)",
+    }.get(profile, profile)
+    print(f" profile     : {_profile_desc}")
     tdesc = ", ".join(cfg.targets[:6]) + (f" (+{len(cfg.targets) - 6} more)"
                                           if len(cfg.targets) > 6 else "")
     print(f" targets     : {tdesc}")
@@ -509,6 +525,9 @@ def _add_scan_args(sp: argparse.ArgumentParser):
     sp.add_argument("--no-rdns", dest="no_rdns", action="store_true",
                     help="skip reverse-DNS (PTR) enrichment — low value for a "
                          "domain-list web scan where you already have hostnames")
+    sp.add_argument("--rdns", dest="rdns", action="store_true",
+                    help="force reverse-DNS on (it is off by default in the "
+                         "auto-detected 'web' profile for a domain list)")
     sp.add_argument("--output", help="output directory")
     sp.add_argument("--ai-provider", dest="ai_provider",
                     choices=["none", "anthropic"], default="none")

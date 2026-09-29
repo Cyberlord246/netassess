@@ -83,7 +83,17 @@ class ResolvedScope:
     name_to_ips: dict[str, list[str]] = field(default_factory=dict)
     unresolved: list[str] = field(default_factory=list)
     domains: list[str] = field(default_factory=list)      # hostnames provided
+    direct_ips: list[str] = field(default_factory=list)   # IP/CIDR given directly
     changed: bool = False                                 # any hostname/cleanup applied
+
+    def profile(self) -> str:
+        """Infer the assessment profile from what the operator supplied:
+        'web' (domain list), 'network' (IPs/CIDRs), or 'mixed'."""
+        if self.domains and not self.direct_ips:
+            return "web"
+        if self.direct_ips and not self.domains:
+            return "network"
+        return "mixed" if (self.domains or self.direct_ips) else "network"
 
 
 def expand_targets(raw_targets: list[str], timeout: float = 3.0,
@@ -107,6 +117,7 @@ def expand_targets(raw_targets: list[str], timeout: float = 3.0,
             hostnames.append(c)
             changed = True
 
+    direct_ips = sorted(set(ips))          # IP/CIDR the operator gave directly
     hostnames = sorted(set(hostnames))
     host_map: dict[str, set] = {}
     name_to_ips: dict[str, list[str]] = {}
@@ -131,5 +142,6 @@ def expand_targets(raw_targets: list[str], timeout: float = 3.0,
         name_to_ips=name_to_ips,
         unresolved=sorted(unresolved),
         domains=hostnames,
+        direct_ips=direct_ips,
         changed=changed,
     )

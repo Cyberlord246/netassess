@@ -62,6 +62,14 @@ def test_expand_targets_unwraps_url_then_resolves():
     assert rs.host_map == {"203.0.113.5": ["www.etf.hsbc.com"]}
 
 
+def test_profile_detection():
+    def f(n, t):
+        return n, ["203.0.113.1"], ""
+    assert expand_targets(["a.example.com", "b.example.com"], resolver=f).profile() == "web"
+    assert expand_targets(["192.0.2.10", "10.0.0.0/24"], resolver=f).profile() == "network"
+    assert expand_targets(["a.example.com", "192.0.2.10"], resolver=f).profile() == "mixed"
+
+
 def _run_all():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:
