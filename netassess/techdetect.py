@@ -61,65 +61,6 @@ _VERSION_HEADER_RE = {
 }
 
 
-# WAF fingerprints — (name, header-name, value-regex). Header presence/value is
-# a strong indicator of a web application firewall / edge protection in front.
-_WAF_SIGS = [
-    ("Cloudflare", "cf-ray", r".+"),
-    ("Cloudflare", "server", r"cloudflare"),
-    ("AWS WAF / ALB", "x-amzn-waf-action", r".+"),
-    ("AWS ELB", "server", r"awselb"),
-    ("Akamai", "x-akamai-transformed", r".+"),
-    ("Akamai", "server", r"akamaighost"),
-    ("Imperva Incapsula", "x-iinfo", r".+"),
-    ("Imperva Incapsula", "set-cookie", r"incap_ses|visid_incap"),
-    ("Sucuri", "x-sucuri-id", r".+"),
-    ("Sucuri", "server", r"sucuri"),
-    ("F5 BIG-IP", "set-cookie", r"bigipserver"),
-    ("Barracuda", "set-cookie", r"barra_counter_session"),
-    ("Fortinet FortiWeb", "set-cookie", r"fortiwafsid"),
-    ("Wallarm", "server", r"wallarm"),
-]
-
-# tech categories that indicate a CDN / edge network
-_CDN_CATEGORIES = {"cdn"}
-
-
-def cdn_of(technologies) -> str:
-    """Return a detected CDN name from already-detected technologies, or ''."""
-    for t in technologies:
-        if t.category in _CDN_CATEGORIES:
-            return t.name
-    return ""
-
-
-def waf_of(headers: dict) -> str:
-    """Detect a WAF/edge-protection product from response headers, or ''."""
-    h = {k.lower(): (v or "") for k, v in (headers or {}).items()}
-    for name, header, rx in _WAF_SIGS:
-        val = h.get(header, "")
-        if val and re.search(rx, val, re.I):
-            return name
-    return ""
-
-
-def response_fingerprint(svc: HTTPService) -> str:
-    """A stable signature for a web service's *default* response, used to
-    correlate/deduplicate the same application seen on many hostnames or IPs.
-
-    Combines: status, normalised title, content-type, content-length bucket,
-    server, and the sorted set of detected technology names. Deliberately
-    coarse (length bucketed) so trivial variance doesn't split one app."""
-    import hashlib
-    title = re.sub(r"\s+", " ", (svc.title or "")).strip().lower()[:80]
-    server = (svc.server or "").strip().lower()
-    ctype = (svc.content_type or "").split(";", 1)[0].strip().lower()
-    clen = svc.content_length or 0
-    bucket = clen // 256                      # coarse length bucket
-    techs = ",".join(sorted(t.name for t in svc.technologies))
-    basis = f"{svc.status}|{title}|{ctype}|{bucket}|{server}|{techs}"
-    return hashlib.sha1(basis.encode("utf-8", "replace")).hexdigest()[:16]
-
-
 def detect_technologies(svc: HTTPService) -> list[Technology]:
     headers = {k.lower(): (v or "") for k, v in svc.headers.items()}
     server = headers.get("server", "")

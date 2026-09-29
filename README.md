@@ -90,22 +90,8 @@ discovery), and `pip install "netassess[ai] @ git+..."` for the LLM mode.
 
 ## Usage
 
-See **[USAGE.md](USAGE.md)** for the full option reference, the web-vs-network
-profiles, and copy-paste recipes.
-
-The simplest way to run a good scan is to pick a **profile** — a one-flag preset:
-
 ```bash
-netassess scan --targets targets.txt --profile quick      # fast triage (~40 ports)
-netassess scan --targets targets.txt --profile standard   # balanced default
-netassess scan --targets targets.txt --profile deep        # thorough (content + nuclei)
-netassess scan --targets domains.txt  --profile web        # web-app focus (vhosts + content)
-```
-
-Any explicit flag still overrides the profile (`--profile deep --ports 22,80,443`).
-More examples:
-
-```bash
+netassess network scan --targets targets.txt --mode auto
 netassess network scan --targets 192.0.2.10,192.0.2.0/24 --content-discovery
 netassess scope check --targets 10.0.0.0/24 --exclude 10.0.0.1
 netassess diff --old baseline/state.json --new latest/state.json --fail-on worse
@@ -116,9 +102,6 @@ netassess diff --old baseline/state.json --new latest/state.json --fail-on worse
 
 ## Highlights
 
-- **Profiles** — one-flag presets (`--profile quick|standard|deep|web`) bundle the
-  sensible option combinations so you don't have to hand-pick flags; explicit flags
-  still override.
 - **Mandatory scope engine** — every active operation is authorized, rate- and
   concurrency-limited, and logged; discovered hosts are never auto-added.
 - **Safe by default** — non-destructive checks only (no exploitation, no

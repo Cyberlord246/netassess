@@ -22,7 +22,7 @@ from .content_discovery import ContentDiscovery, _BUNDLED_WORDLIST
 from .cve import CVEEngine
 from .discovery import DiscoveryEngine
 from .dns_recon import ReverseDNS
-from .models import HostStatus, Port, PortState, Service
+from .models import HostStatus
 from .ports import PortScanner, effective_timeout
 from .progress import Progress
 from .roles import classify, detect_anomalies
@@ -37,10 +37,8 @@ from .vuln import VulnAssessmentEngine
 
 
 class AssessmentEngine:
-    def __init__(self, config: Config, log=None, host_hostnames=None):
+    def __init__(self, config: Config, log=None):
         self.config = config
-        # {ip: [hostnames]} for user-provided domains that resolved to these IPs
-        self._provided_hostnames = host_hostnames or {}
         self.scope = ScopeEngine(config)
         self.graph = AssetGraph()
         self.graph.meta = {"mode": config.mode, "targets": config.targets}
@@ -54,7 +52,6 @@ class AssessmentEngine:
         self.cve = self._build_cve_engine(config)
         self.content = ContentDiscovery(config, self.scope) if config.content_discovery else None
         self.ferox = self._build_ferox(config)
-        self.httpx = self._build_httpx(config)
         self.udp = UDPScanner(config, self.scope) if config.udp_scan else None
         self.vhost = VhostProber(config, self.scope) if config.vhost_probe else None
         self.nuclei = self._build_nuclei(config)
@@ -76,15 +73,6 @@ class AssessmentEngine:
         if config.content_tool == "feroxbuster":
             return adapter          # explicit request; used even if we must warn
         return adapter if adapter.available() else None  # auto
-
-    def _build_httpx(self, config: Config):
-        if getattr(config, "http_tool", "auto") == "builtin":
-            return None
-        from .adapters.httpx_adapter import HttpxAdapter
-        adapter = HttpxAdapter()
-        if config.http_tool == "httpx":
-            return adapter          # explicit request; used even if we must warn
-        return adapter if adapter.available() else None   # auto
 
     def _build_cve_engine(self, config: Config):
         if not config.cve_enabled:
@@ -109,25 +97,11 @@ class AssessmentEngine:
         hosts = self.scope.expand_hosts()
         self._log(f"[scope] {len(hosts)} in-scope host(s) authorized")
 
-        # seed operator-provided domain names onto their resolved IPs, so the HTTP
-        # probe uses them as Host/SNI, the vhost prober probes them, and findings
-        # are attributed back to the domain in the inventory
-        if self._provided_hostnames:
-            seeded = 0
-            for ip, names in self._provided_hostnames.items():
-                h = self.graph.get_or_create(ip)
-                for n in names:
-                    if n not in h.hostnames:
-                        h.hostnames.append(n)
-                        seeded += 1
-            self._log(f"[scope] seeded {seeded} provided hostname(s) across "
-                      f"{len(self._provided_hostnames)} resolved IP(s)")
-
         # Ordered plan. Only enabled stages are listed/run, so the [k/N] counts
         # and the plan the operator sees reflect what will actually happen.
         stages = [
             ("Host discovery",             lambda: self._phase_discovery(hosts), True,  self._sum_discovery),
-            ("Reverse DNS",                self._phase_rdns,        getattr(self.config, "reverse_dns", True), self._sum_rdns),
+            ("Reverse DNS",                self._phase_rdns,        True,                self._sum_rdns),
             ("Port scan",                  self._phase_portscan,    True,                self._sum_ports),
             ("Service identification",     self._phase_service_id,  True,                self._sum_services),
             ("Service & protocol probes",  self._phase_probe,       True,                self._sum_http),
@@ -257,12 +231,7 @@ class AssessmentEngine:
         recs = self.rdns.lookup_many(targets, concurrency=self.config.concurrency)
         for ip, rec in recs.items():
             if rec["hostnames"]:
-                # merge PTR names with any operator-provided domains (keep the
-                # provided ones first; they drive Host/SNI selection)
-                names = self.graph.get_or_create(ip).hostnames
-                for hn in rec["hostnames"]:
-                    if hn not in names:
-                        names.append(hn)
+                self.graph.get_or_create(ip).hostnames = rec["hostnames"]
 
     def _phase_portscan(self):
         targets = [h.ip for h in self.graph.hosts.values()
@@ -271,26 +240,6 @@ class AssessmentEngine:
             self._log("[ports] no live hosts to scan")
             return
         ports = self.config.effective_ports()
-
-        # Skip the scan entirely: assume the configured ports are open and let the
-        # service-ID + probe stages confirm which actually respond (probes fail
-        # gracefully on closed ports). Best paired with a small --ports set.
-        if self.config.skip_portscan:
-            for ip in targets:
-                host = self.graph.get_or_create(ip)
-                for num in ports:
-                    if num not in host.ports:
-                        host.ports[num] = Port(number=num, state=PortState.OPEN,
-                                               service=Service())
-            self._log(f"[ports] scan SKIPPED — assuming {len(ports)} configured "
-                      f"port(s) open on {len(targets)} host(s); probes will confirm "
-                      "which respond")
-            if len(ports) > 50:
-                self._log(f"[ports] NOTE: {len(ports)} ports/host will be probed "
-                          "directly — pair --skip-portscan with a small --ports set "
-                          "(e.g. 80,443,8080,8443) to keep this fast")
-            return
-
         # per-host adaptive timeout from discovery RTT (fast hosts wait less)
         host_timeouts = {
             ip: effective_timeout(self.graph.get_or_create(ip).latency_ms, self.config)
@@ -327,16 +276,6 @@ class AssessmentEngine:
         if not tasks:
             self._log("[probe] no probe targets")
             return
-
-        # Fast bulk HTTP fingerprint via httpx (if active): identifies + fingerprints
-        # all candidate web endpoints in one async pass, far faster than the built-in
-        # per-service GET. When it runs, the built-in HTTPProbe is dropped from the
-        # loop (httpx did the fetch); misconfig checks still run on confirmed services.
-        httpx_web = self._run_httpx_bulk() if self._httpx_active() else None
-        probes = self.probes
-        if httpx_web is not None:
-            probes = [p for p in self.probes if p.name != "http"]
-
         self._log(f"[probe] running {len(tasks)} probe task(s) "
                   f"(mode={self.config.mode})…")
 
@@ -345,9 +284,8 @@ class AssessmentEngine:
             if host is None or task.port not in host.ports:
                 return
             port = host.ports[task.port]
-            # already confirmed as a web service by httpx -> no generic banner grab
-            confirmed = bool(httpx_web) and (host.ip, port.number) in httpx_web
-            for probe in probes:
+            confirmed = False
+            for probe in self.probes:
                 if not probe.matches(port):
                     continue
                 # a probe "confirms" when it identifies the service without error;
@@ -366,65 +304,6 @@ class AssessmentEngine:
                 self.progress.bump(total, "services tested")
         self._log(f"[probe] complete — {len(self.graph.all_http_services())} "
                   "HTTP service(s) analysed")
-
-    def _httpx_active(self) -> bool:
-        return self.httpx is not None and self.httpx.available()
-
-    def _run_httpx_bulk(self):
-        """Bulk-fingerprint candidate web endpoints with httpx. Returns the set of
-        (ip, port) confirmed as web (services populated on the graph), or None to
-        fall back to the built-in probe."""
-        from .services import is_probably_http
-
-        index: dict[str, tuple] = {}     # "ip:port" -> (host, port)
-        for host in self.graph.hosts.values():
-            for port in host.open_ports():
-                if not is_probably_http(port):
-                    continue
-                if not self.scope.authorize(host.ip, port.number).allowed:
-                    continue
-                index[f"{host.ip}:{port.number}"] = (host, port)
-        if not index:
-            return set()
-
-        self._log(f"[http] bulk-probing {len(index)} candidate web endpoint(s) "
-                  "via httpx…")
-        records, res = self.httpx.probe(
-            sorted(index), timeout=int(self.config.timeout),
-            threads=self.config.concurrency, rate=self.config.rate)
-        if res.not_found:
-            self._log("[http] httpx not usable — using built-in HTTP probe")
-            return None
-
-        httpprobe = next((p for p in self.probes if p.name == "http"), None)
-        confirmed: set = set()
-        added = 0
-        for rec in records:
-            key = str(rec.get("input") or rec.get("host") or "")
-            hp = index.get(key)
-            if hp is None:                # try to recover ip:port from the url
-                continue
-            host, port = hp
-            svc = self.httpx.to_http_service(rec, host.ip, port.number)
-            host.http_services.append(svc)
-            # stamp the confirmed identity on the port
-            port.service.name = "https" if svc.scheme == "https" else "http"
-            port.service.confidence = self._high_conf()
-            port.service.evidence = f"httpx: HTTP {svc.status}"
-            # safe misconfig checks (OPTIONS/TRACE/dir-listing) that httpx doesn't do
-            if httpprobe is not None:
-                for f in httpprobe.misconfig(host, port, svc):
-                    host.add_finding(f)
-            confirmed.add((host.ip, port.number))
-            added += 1
-        self._log(f"[http] httpx confirmed {added} web service(s) of {len(index)} "
-                  "candidate(s)")
-        return confirmed
-
-    @staticmethod
-    def _high_conf():
-        from .models import Confidence
-        return Confidence.HIGH
 
     def _run_probe_safe(self, probe, host, port) -> bool:
         """Run one probe; add its findings. Returns True if it positively
@@ -470,42 +349,12 @@ class AssessmentEngine:
             self._log("[content] feroxbuster requested but not found on PATH — "
                       "falling back to built-in probe")
 
-        # Intelligent target selection: only content-discover working, canonical,
-        # UNIQUE web roots — skip blocked/broken responses (403/500/400/…), skip a
-        # :80 that just redirects to its :443 sibling, and collapse services that
-        # return the same response (e.g. :80 and :443 serving identical content).
-        services, sel = self._select_content_targets(services)
-        if not services:
-            self._log("[content] no workable/unique web root to enumerate "
-                      f"(skipped {sel['blocked']} blocked/broken, "
-                      f"{sel['redirect']} redirect-to-sibling, {sel['dupe']} duplicate)")
-            return
-
         backend = "feroxbuster" if use_ferox else "built-in"
-        from urllib.parse import urlparse
-
-        def _label(svc):
-            h = urlparse(svc.url).hostname or ""
-            return h if (h and h != svc.ip) else f"{svc.ip}:{svc.port}"
-
-        names = sorted({_label(s) for _h, s in services})
-        shown = ", ".join(names[:15]) + (f" (+{len(names) - 15} more)"
-                                         if len(names) > 15 else "")
-        self._log(f"[content] {len(services)} unique web root(s) selected for "
-                  f"content discovery: {shown}")
-        drop = []
-        if sel.get("ip_generic"):
-            drop.append(f"{sel['ip_generic']} bare-IP root (covered by its domains)")
-        if sel["blocked"]:
-            drop.append(f"{sel['blocked']} blocked/broken (403/500/400/…)")
-        if sel["redirect"]:
-            drop.append(f"{sel['redirect']} redirect-to-sibling (e.g. :80→:443)")
-        if sel["dupe"]:
-            drop.append(f"{sel['dupe']} duplicate response")
-        if drop:
-            self._log("[content] skipped " + ", ".join(drop))
+        web_list = ", ".join(sorted(f"{ip}:{port}" for ip, port in web_ports))
+        self._log(f"[content] {len(services)} web service(s) qualify for content "
+                  f"discovery: {web_list}")
         if skipped:
-            self._log(f"[content] non-web ports (assessed by protocol probes): "
+            self._log(f"[content] skipping {sum(skipped.values())} non-web port(s): "
                       + ", ".join(f"{k}×{v}" for k, v in sorted(skipped.items())))
         self._log(f"[content] enumerating web content via {backend}…")
 
@@ -540,76 +389,6 @@ class AssessmentEngine:
         note = (f" ({sni_passes} HTTPS vhost(s) via SNI-aware built-in pass)"
                 if sni_passes else "")
         self._log(f"[content] {added} path finding(s) added{note}")
-
-    # base responses that indicate a service not worth content discovery
-    _CONTENT_SKIP_STATUS = {400, 401, 403, 405, 429, 500, 502, 503}
-    _REDIRECT_STATUS = {301, 302, 303, 307, 308}
-
-    def _select_content_targets(self, services):
-        """Pick working, canonical, UNIQUE web roots for content discovery.
-
-        Drops: (1) blocked/broken base responses (403/500/400/401/…), (2) a
-        service whose root only redirects to a sibling service we already cover
-        (e.g. :80 → :443), and (3) duplicates that return the same response
-        fingerprint (same app on :80 and :443, or many names → one site).
-        Returns (targets, stats)."""
-        from urllib.parse import urlparse
-
-        stats = {"blocked": 0, "redirect": 0, "dupe": 0, "ip_generic": 0}
-
-        def _is_domain(svc):
-            h = urlparse(svc.url).hostname or ""
-            return bool(h) and h != svc.ip
-
-        # (0) prefer DOMAIN-named roots: if an IP has any hostname-based web service
-        # (a resolved domain / vhost), drop that IP's bare-IP root — on a shared/CDN
-        # IP it is just the generic default response, and content discovery belongs
-        # on the domains, not the IP.
-        ips_with_domain = {s.ip for _h, s in services if _is_domain(s)}
-        prefer_domain = []
-        for host, svc in services:
-            if svc.ip in ips_with_domain and not _is_domain(svc):
-                stats["ip_generic"] += 1
-                continue
-            prefer_domain.append((host, svc))
-        services = prefer_domain
-
-        # (1) drop blocked/broken base responses
-        workable = []
-        for host, svc in services:
-            if svc.status in self._CONTENT_SKIP_STATUS:
-                stats["blocked"] += 1
-                continue
-            workable.append((host, svc))
-
-        have = {(s.ip, s.port) for _h, s in workable}
-
-        # (2) drop a root that just redirects to a sibling service we already have
-        non_redirect = []
-        for host, svc in workable:
-            if svc.status in self._REDIRECT_STATUS and svc.redirect_chain:
-                loc = svc.redirect_chain[0]
-                tgt_https = "https://" in loc.lower()
-                tgt_port = 443 if tgt_https else 80
-                if tgt_port != svc.port and (svc.ip, tgt_port) in have:
-                    stats["redirect"] += 1
-                    continue
-            non_redirect.append((host, svc))
-
-        # (3) collapse identical responses by fingerprint (prefer https / :443)
-        groups: dict = {}
-        for host, svc in non_redirect:
-            key = svc.fingerprint or f"{svc.ip}:{svc.port}:{svc.url}"
-            groups.setdefault(key, []).append((host, svc))
-        targets = []
-        for grp in groups.values():
-            grp.sort(key=lambda hs: (hs[1].scheme != "https", hs[1].port != 443,
-                                     hs[1].port))
-            targets.append(grp[0])
-            stats["dupe"] += len(grp) - 1
-
-        targets.sort(key=lambda hs: (hs[1].ip, hs[1].port))
-        return targets, stats
 
     def _run_ferox(self, host, svc):
         wordlist = self.config.content_wordlist or _BUNDLED_WORDLIST

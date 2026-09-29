@@ -56,11 +56,7 @@ class VhostProber:
             m = _CN_RE.search(tls.subject or "")
             if m:
                 names.append(m.group(1).strip())
-        # also probe ALL operator-provided domains that resolved to this IP
-        # (a domain list often maps many names to one IP — each is its own vhost,
-        # including the first, so content discovery runs on the domain not the IP)
-        names.extend(host.hostnames)
-        already = {host.ip}
+        already = {host.hostnames[0].lower() if host.hostnames else "", host.ip}
         out, seen = [], set()
         for n in names:
             n = n.strip().lower().rstrip(".")
@@ -122,21 +118,16 @@ class VhostProber:
             status = int(lines[0].split()[1])
         except (IndexError, ValueError):
             return None
-        headers: dict[str, str] = {}
+        loc = ""
         for ln in lines[1:]:
-            if b":" not in ln:
-                continue
-            k, _, v = ln.partition(b":")
-            headers[k.strip().lower().decode("latin-1", "replace")] = \
-                v.strip().decode("latin-1", "replace")
-        loc = headers.get("location", "")
+            if ln.lower().startswith(b"location:"):
+                loc = ln.split(b":", 1)[1].strip().decode("latin-1", "replace")
+                break
         title = ""
         m = _TITLE_RE.search(body.decode("utf-8", "replace"))
         if m:
             title = re.sub(r"\s+", " ", m.group(1)).strip()[:120]
-        return {"status": status, "len": len(body), "title": title, "loc": loc,
-                "headers": headers, "server": headers.get("server", ""),
-                "content_type": headers.get("content-type", "")}
+        return {"status": status, "len": len(body), "title": title, "loc": loc}
 
     def _differs(self, base, r) -> bool:
         if r is None:
@@ -170,22 +161,10 @@ class VhostProber:
             if not self._differs(base, r):
                 continue
             url = f"{scheme}://{name}:{port}/"
-            vsvc = HTTPService(
+            host.http_services.append(HTTPService(
                 url=url, ip=ip, port=port, scheme=scheme, status=r["status"],
                 title=r["title"], content_length=r["len"],
-                server=r.get("server", ""), content_type=r.get("content_type", ""),
-                headers=r.get("headers", {}),
-            )
-            # full fingerprinting on the DOMAIN service: technology / CDN / WAF
-            # detection + a response fingerprint (so identical CDN sites collapse).
-            from .techdetect import (
-                cdn_of, detect_technologies, response_fingerprint, waf_of,
-            )
-            vsvc.technologies = detect_technologies(vsvc)
-            vsvc.cdn = cdn_of(vsvc.technologies)
-            vsvc.waf = waf_of(vsvc.headers)
-            vsvc.fingerprint = response_fingerprint(vsvc)
-            host.http_services.append(vsvc)
+            ))
             findings.append(Finding(
                 title=f"Virtual host serves a distinct application: {name}",
                 asset=f"{ip}:{port}",

@@ -73,13 +73,8 @@ class HTTPProbe(ServiceProbe):
             if svc is None:
                 return ProbeResult(error=err or err2)
 
-        from ..techdetect import (
-            cdn_of, detect_technologies, response_fingerprint, waf_of,
-        )
+        from ..techdetect import detect_technologies
         svc.technologies = detect_technologies(svc)
-        svc.cdn = cdn_of(svc.technologies)
-        svc.waf = waf_of(svc.headers)
-        svc.fingerprint = response_fingerprint(svc)
 
         # Confirmed HTTP: stamp the real identity on the port so a low-confidence
         # port-table guess (e.g. 'irdmi' on 7999) is corrected to http/https and
@@ -200,16 +195,6 @@ class HTTPProbe(ServiceProbe):
                 return status, hdrs, body
             except (http.client.HTTPException, ssl.SSLError, socket.timeout, OSError):
                 return None
-
-    def misconfig(self, host: Host, port: Port, svc: HTTPService) -> list[Finding]:
-        """Public: run the safe OPTIONS/TRACE/dir-listing checks against an
-        already-fingerprinted service (e.g. one httpx confirmed). Scope-gated."""
-        if not self.in_scope(host.ip, port.number):
-            return []
-        try:
-            return self._misconfig_checks(host, port, svc)
-        except Exception:
-            return []
 
     def _misconfig_checks(self, host: Host, port: Port, svc: HTTPService) -> list[Finding]:
         """HTTP server misconfigurations (excludes cookie flags / CORS / missing

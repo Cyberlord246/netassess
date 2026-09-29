@@ -13,7 +13,7 @@ import argparse
 import os
 import sys
 
-from .config import Config, COMMON_PORTS, DEFAULT_PORTS, WEB_PORTS
+from .config import Config, COMMON_PORTS, DEFAULT_PORTS
 from .engine import AssessmentEngine
 from .report import ReportGenerator
 from .scope import ScopeEngine
@@ -68,15 +68,6 @@ def _parse_ports(spec: str | None) -> list[int] | None:
 
 
 def _build_config(args) -> Config:
-    # Apply a profile preset first: it fills in only options the user left at
-    # their default, so explicit flags below always win. `standard` is a no-op.
-    from .profiles import apply_profile, DEFAULT_PROFILE
-    prof = getattr(args, "profile", None) or DEFAULT_PROFILE
-    if prof != DEFAULT_PROFILE:
-        args._profile_applied = apply_profile(args, prof)
-    else:
-        args._profile_applied = []
-
     cfg = Config()
     cfg.targets = _read_targets(getattr(args, "targets", None))
     cfg.exclude = _read_targets(getattr(args, "exclude", None))
@@ -86,11 +77,6 @@ def _build_config(args) -> Config:
         cfg.ports = ports
     elif getattr(args, "common_ports", False):  # fast 40-port preset
         cfg.ports = list(COMMON_PORTS)
-    elif getattr(args, "skip_portscan", False):
-        # skipping the scan assumes ports are open; without an explicit set,
-        # limit to common web ports so we don't probe ~1000 assumed-open ports
-        # on every host (which explodes into hundreds of thousands of tasks).
-        cfg.ports = list(WEB_PORTS)
     # else: keep the default (top-1000 TCP)
     cfg.full_port_scan = getattr(args, "full_port_scan", False)
     cfg.deep = getattr(args, "deep", False)
@@ -110,12 +96,6 @@ def _build_config(args) -> Config:
         cfg.discovery_mode = args.discovery
     if getattr(args, "skip_discovery", False):
         cfg.skip_discovery = True
-    if getattr(args, "skip_portscan", False):
-        cfg.skip_portscan = True
-    if getattr(args, "no_rdns", False):
-        cfg.reverse_dns = False
-    if getattr(args, "http_tool", None):
-        cfg.http_tool = args.http_tool
     if getattr(args, "output", None):
         cfg.output_dir = args.output
     if getattr(args, "ai_provider", None):
@@ -188,110 +168,22 @@ def _logger(verbose: bool):
 def cmd_scan(args) -> int:
     cfg = _build_config(args)
     if not cfg.targets:
-        print("error: no targets provided (--targets FILE|IP,IP,CIDR|hostname)",
-              file=sys.stderr)
-        return 2
-
-    # Resolve hostname/URL targets (a domain list is the common case) to IPs.
-    # Operator-provided names are authorised; their IPs become scope, and we keep
-    # name->IP so probes use the domain as Host/SNI and the report attributes it.
-    from .resolve import expand_targets
-    host_hostnames: dict = {}
-    rs = expand_targets(cfg.targets, timeout=cfg.timeout, concurrency=cfg.concurrency)
-    if rs.domains:
-        print(f" resolving   : {len(rs.domains)} domain(s) → {len(rs.ip_targets)} "
-              f"IP(s)" + (f"; {len(rs.unresolved)} unresolved" if rs.unresolved else ""))
-        if rs.unresolved:
-            shown = ", ".join(rs.unresolved[:8])
-            print(f"   unresolved: {shown}"
-                  + (f" (+{len(rs.unresolved) - 8} more)" if len(rs.unresolved) > 8 else ""))
-    if rs.changed:
-        cfg.targets = rs.ip_targets
-        host_hostnames = rs.host_map
-
-    # Input-aware profile: a domain list is a web assessment; bare IPs/CIDRs are a
-    # network assessment. Adjust defaults the operator did not set explicitly.
-    profile = rs.profile()
-    if not (getattr(args, "no_rdns", False) or getattr(args, "rdns", False)):
-        # PTR enrichment is valuable for naming bare IPs, redundant for a domain
-        # list (forward names already known) — default it per profile.
-        cfg.reverse_dns = (profile != "web")
-    if getattr(args, "rdns", False):
-        cfg.reverse_dns = True
-    # Virtual-host discovery is a WEB attack-surface expansion technique: on for a
-    # web (domain) scan, off for a network (IP/CIDR) scan — unless set explicitly.
-    if not (getattr(args, "vhosts", False) or getattr(args, "no_vhosts", False)):
-        cfg.vhost_probe = (profile != "network")
-    if getattr(args, "vhosts", False):
-        cfg.vhost_probe = True
-    if cfg.exclude:                     # resolve hostname exclusions too
-        ex = expand_targets(cfg.exclude, timeout=cfg.timeout,
-                            concurrency=cfg.concurrency)
-        if ex.changed:
-            cfg.exclude = ex.ip_targets
-    if not cfg.targets:
-        print("error: no targets resolved to an IP (all hostnames failed DNS)",
-              file=sys.stderr)
+        print("error: no targets provided (--targets FILE|IP,IP,CIDR)", file=sys.stderr)
         return 2
 
     print("=" * 60)
     print(" netassess — authorized network attack-surface assessment")
     print("=" * 60)
     print(f" mode        : {cfg.mode}")
-    _preset = getattr(args, "profile", None) or "standard"
-    from .profiles import describe as _describe_preset
-    _applied = getattr(args, "_profile_applied", [])
-    if _preset != "standard" and _applied:
-        _labels = {
-            "common_ports": "fast ~40 ports", "deep": "deep probes",
-            "content_discovery": "content discovery", "nuclei": "nuclei",
-            "skip_portscan": "skip port scan (probe web ports)",
-            "vhosts": "vhost discovery", "no_rdns": "reverse-DNS off",
-        }
-        _en = ", ".join(_labels.get(k, k) for k in _applied)
-        print(f" profile     : {_preset} — {_describe_preset(_preset)}")
-        print(f"               enabled: {_en}")
-    else:
-        print(f" profile     : {_preset} — {_describe_preset(_preset)}")
-    _scan_type_desc = {
-        "web": "web (domains) — HTTP/TLS + vhost + web inventory; reverse-DNS off, "
-               "hostnames used as Host/SNI",
-        "network": "network (IPs/CIDRs) — ports + services + protocols + CVE; "
-                   "vhost discovery off, reverse-DNS on",
-        "mixed": "mixed (domains + IPs) — full pipeline",
-    }.get(profile, profile)
-    print(f" scan type   : {_scan_type_desc}")
-    tdesc = ", ".join(cfg.targets[:6]) + (f" (+{len(cfg.targets) - 6} more)"
-                                          if len(cfg.targets) > 6 else "")
-    print(f" targets     : {tdesc}")
+    print(f" targets     : {', '.join(cfg.targets)}")
     if cfg.exclude:
         print(f" exclude     : {', '.join(cfg.exclude)}")
-    _explicit_ports = bool(_parse_ports(getattr(args, "ports", None))) or \
-        getattr(args, "common_ports", False)
-    if cfg.skip_portscan and not _explicit_ports and not cfg.full_port_scan:
-        print(f" note        : --skip-portscan without --ports → limited to "
-              f"{len(WEB_PORTS)} common web ports "
-              f"({','.join(map(str, WEB_PORTS[:6]))}…); pass --ports to change")
-    _ports_desc = '1-65535' if cfg.full_port_scan else str(len(cfg.effective_ports())) + ' ports'
-    if cfg.skip_portscan:
-        _ports_desc += ' (scan SKIPPED — assumed open, probed directly)'
-    print(f" ports       : {_ports_desc}")
+    print(f" ports       : {'1-65535' if cfg.full_port_scan else str(len(cfg.effective_ports())) + ' ports'}")
     print(f" concurrency : {cfg.concurrency}   rate: {cfg.rate}/s   timeout: {cfg.timeout}s")
     cve_status = ("offline+NVD" if cfg.cve_online else "offline KB") if cfg.cve_enabled else "off"
     print(f" cve         : {cve_status}   html: {'yes' if cfg.html_report else 'no'}")
     print(f" report      : min-severity={cfg.report_min_severity}   "
           f"aggregate={'yes' if cfg.report_aggregate else 'no'}")
-    if cfg.http_tool != "builtin":
-        from .adapters.httpx_adapter import HttpxAdapter
-        hx = HttpxAdapter().available()
-        if cfg.http_tool == "httpx":
-            print(f" http probe  : httpx" + ("" if hx else " (NOT FOUND -> built-in)"))
-        elif hx:
-            print(f" http probe  : httpx (fast bulk)")
-        else:
-            print(f" http probe  : built-in (httpx not installed)")
-    else:
-        print(f" http probe  : built-in")
     if cfg.content_discovery:
         from .adapters.feroxbuster_adapter import FeroxbusterAdapter
         has_ferox = FeroxbusterAdapter().available()
@@ -324,7 +216,7 @@ def cmd_scan(args) -> int:
         print(f" nuclei      : off")
     print("-" * 60)
 
-    engine = AssessmentEngine(cfg, log=_logger(True), host_hostnames=host_hostnames)
+    engine = AssessmentEngine(cfg, log=_logger(True))
     engine.run()
     paths = engine.report()
     print("-" * 60)
@@ -506,12 +398,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _add_scan_args(sp: argparse.ArgumentParser):
-    from .profiles import profile_names, help_text, DEFAULT_PROFILE
     sp.add_argument("--targets", required=True,
                     help="file path, or comma-separated IPs/CIDRs")
-    sp.add_argument("--profile", choices=profile_names(), default=DEFAULT_PROFILE,
-                    metavar="{quick,standard,deep,web}",
-                    help=help_text())
     sp.add_argument("--exclude", help="file/comma IPs/CIDRs to exclude")
     sp.add_argument("--mode", choices=["deterministic", "ai", "auto"],
                     default="deterministic")
@@ -531,11 +419,8 @@ def _add_scan_args(sp: argparse.ArgumentParser):
     sp.add_argument("--udp-ports", dest="udp_ports",
                     help="UDP ports to scan, e.g. 53,123,161 (default: common set)")
     sp.add_argument("--no-vhosts", dest="no_vhosts", action="store_true",
-                    help="disable virtual-host discovery (default-on for a web/domain "
-                         "scan, default-off for a network/IP scan)")
-    sp.add_argument("--vhosts", dest="vhosts", action="store_true",
-                    help="force virtual-host discovery on (e.g. for an IP scan where "
-                         "it is off by default)")
+                    help="disable virtual-host discovery (it runs by default: probes "
+                         "TLS SAN/CN hostnames via SNI+Host on the same in-scope IP)")
     sp.add_argument("--no-progress", dest="no_progress", action="store_true",
                     help="suppress the staged plan + live progress output")
     sp.add_argument("--no-validate", dest="no_validate", action="store_true",
@@ -570,20 +455,6 @@ def _add_scan_args(sp: argparse.ArgumentParser):
                          "TCP-connect). Default auto.")
     sp.add_argument("--skip-discovery", dest="skip_discovery", action="store_true",
                     help="skip discovery; treat every in-scope host as live")
-    sp.add_argument("--skip-portscan", dest="skip_portscan", action="store_true",
-                    help="skip the port scan; assume --ports are open and probe "
-                         "them directly (best with a small --ports set, e.g. "
-                         "80,443,8080,8443). Probes fail gracefully on closed ports")
-    sp.add_argument("--no-rdns", dest="no_rdns", action="store_true",
-                    help="skip reverse-DNS (PTR) enrichment — low value for a "
-                         "domain-list web scan where you already have hostnames")
-    sp.add_argument("--rdns", dest="rdns", action="store_true",
-                    help="force reverse-DNS on (it is off by default in the "
-                         "auto-detected 'web' profile for a domain list)")
-    sp.add_argument("--http-tool", dest="http_tool",
-                    choices=["auto", "httpx", "builtin"],
-                    help="HTTP-probe backend: auto (use ProjectDiscovery httpx if "
-                         "installed, else built-in), httpx (force), builtin")
     sp.add_argument("--output", help="output directory")
     sp.add_argument("--ai-provider", dest="ai_provider",
                     choices=["none", "anthropic"], default="none")

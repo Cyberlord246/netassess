@@ -29,10 +29,6 @@ PROBER_PORTS = {
 DEFAULT_PORTS = sorted(set(TOP_1000_TCP) | set(COMMON_40) | PROBER_PORTS)
 COMMON_PORTS = list(COMMON_40)
 
-# Common web ports — the safe default set when the port scan is skipped and the
-# operator gave no explicit --ports (prevents assuming all ~1000 ports open).
-WEB_PORTS = [80, 443, 8080, 8443, 8000, 8888, 8008, 8081, 3000, 5000, 9000, 9443]
-
 
 @dataclass
 class Config:
@@ -64,8 +60,6 @@ class Config:
     # --- discovery --------------------------------------------------------
     discovery_ports: list[int] = field(default_factory=lambda: [443, 80, 22, 445, 3389])
     skip_discovery: bool = False      # treat all in-scope hosts as live
-    skip_portscan: bool = False       # skip the scan; assume --ports open, probe directly
-    reverse_dns: bool = True          # PTR-lookup live hosts (low value for domain lists)
     discovery_mode: str = "auto"      # auto | nmap | tcp
     #  auto : nmap -sn if available (+ TCP fallback for the rest), else TCP
     #  nmap : nmap -sn only
@@ -92,9 +86,6 @@ class Config:
     cve_db: Optional[str] = None      # extra CVE JSON to merge into the KB
     cve_nvd_cache: Optional[str] = None  # offline NVD sync cache (default ~/.netassess/nvd.json)
     kev_cache: Optional[str] = None   # CISA KEV + EPSS cache (default ~/.netassess/kev.json)
-
-    # --- http probing -----------------------------------------------------
-    http_tool: str = "auto"           # auto | httpx | builtin (bulk HTTP fingerprint)
 
     # --- content discovery ------------------------------------------------
     content_discovery: bool = False   # probe common web paths (GET-only, opt-in)

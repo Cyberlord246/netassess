@@ -91,7 +91,6 @@ class HTMLReport:
         ]
         parts.append(self._summary(g, view, sev_counts))
         parts.append(self._scope())
-        parts.append(self._web_inventory())
         parts.append(self._priority())
         parts.append(self._findings_section(view))
         parts.append(self._domains())
@@ -109,78 +108,6 @@ class HTMLReport:
         return "".join(parts)
 
     # -- sections --------------------------------------------------------- #
-    def _web_inventory(self) -> str:
-        from .web_inventory import build_inventory, inventory_summary
-        from .validation import display_state
-        assets = build_inventory(self.graph)
-        if not assets:
-            return ""
-        summ = inventory_summary(assets)
-        out = ["<h2>Web Attack-Surface Inventory</h2>",
-               "<p class='note'>"
-               f"{summ['apps']} distinct web application(s) across "
-               f"{summ['exposures']} exposure(s) — {summ['deduped']} duplicate(s) "
-               "collapsed by response fingerprint. "
-               f"{summ['behind_cdn']} behind a CDN, {summ['behind_waf']} behind a "
-               "WAF. Distinct apps on a shared IP are kept separate.</p>"]
-        for a in assets:
-            color = _SEV_COLORS.get(a.risk_band, "#546e7a")
-            pills = [f"<span class='pill' style='border-color:{color};color:{color}'>"
-                     f"risk {a.risk}/100</span>",
-                     f"<span class='pill'>{_esc(a.scheme)}</span>"]
-            if a.status:
-                pills.append(f"<span class='pill'>HTTP {a.status}</span>")
-            if a.cdn:
-                pills.append(f"<span class='pill'>CDN: {_esc(a.cdn)}</span>")
-            if a.waf:
-                pills.append(f"<span class='pill'>WAF: {_esc(a.waf)}</span>")
-            pills.append(f"<span class='pill'>validation: "
-                         f"{_esc(display_state(a.validation))}</span>")
-            urls = ", ".join(f"<span class='mono'>{_esc(e.url)}</span>"
-                             for e in sorted(a.exposures, key=lambda e: e.url)[:6])
-            rows = [f"<div class='kv'>{''.join(pills)}</div>",
-                    f"<div class='kv'><b>Exposures ({a.exposure_count}):</b> {urls}</div>"]
-            if len(a.hostnames) > 1 or len(a.ips) > 1:
-                rows.append(f"<div class='kv'><b>Correlated across:</b> "
-                            f"{len(a.hostnames)} hostname(s), {len(a.ips)} IP(s)</div>")
-            if a.title:
-                rows.append(f"<div class='kv'><b>Title:</b> {_esc(a.title)}</div>")
-            if a.server:
-                rows.append(f"<div class='kv'><b>Server:</b> {_esc(a.server)}</div>")
-            if a.technologies:
-                rows.append(f"<div class='kv'><b>Technologies:</b> "
-                            f"{_esc(', '.join(a.technologies))}</div>")
-            if a.tls_sans:
-                sans = sorted(a.tls_sans)
-                rows.append(f"<div class='kv'><b>TLS SANs:</b> "
-                            f"{_esc(', '.join(sans[:12]))}"
-                            + (f" (+{len(sans) - 12} more)" if len(sans) > 12 else "")
-                            + "</div>")
-            if a.vhosts:
-                rows.append(f"<div class='kv'><b>Virtual hosts:</b> "
-                            f"{_esc(', '.join(sorted(a.vhosts)))}</div>")
-            if a.endpoints:
-                cats = ", ".join(f"{k}×{v}" for k, v in
-                                 sorted(a.endpoint_categories.items()))
-                rows.append(f"<div class='kv'><b>Endpoints ({len(a.endpoints)}):</b> "
-                            f"{_esc(cats)}</div>")
-                if a.interesting_endpoints:
-                    ie = ", ".join(f"<span class='mono'>{_esc(p)}</span>"
-                                   for p in a.interesting_endpoints[:12])
-                    rows.append(f"<div class='kv'><b>Interesting:</b> {ie}</div>")
-            if a.misconfigurations:
-                rows.append(f"<div class='kv'><b>Misconfigurations:</b> "
-                            f"{_esc('; '.join(a.misconfigurations))}</div>")
-            if a.info_leaks:
-                rows.append(f"<div class='kv'><b>Information leakage:</b> "
-                            f"{_esc('; '.join(a.info_leaks))}</div>")
-            if a.vuln_candidates:
-                rows.append(f"<div class='kv'><b>Vulnerability candidates:</b> "
-                            f"{_esc('; '.join(a.vuln_candidates))}</div>")
-            out.append(f"<div class='card' style='border-left-color:{color}'>"
-                       f"<h3>{_esc(a.name)}</h3>{''.join(rows)}</div>")
-        return "".join(out)
-
     def _summary(self, g, view, sev_counts) -> str:
         cells = [
             ("Hosts", len(g.hosts)),

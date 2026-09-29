@@ -30,17 +30,14 @@ def test_candidates_from_sans_and_cn():
     assert cands == {"app.example.com", "api.example.com", "www.example.com"}
 
 
-def test_candidates_skip_wildcards_and_ips():
+def test_candidates_skip_wildcards_ips_and_known():
     p = _prober()
     h = Host(ip="192.0.2.10")
     h.hostnames = ["www.example.com"]
     svc = _svc(sans=["*.example.com", "192.0.2.10", "www.example.com",
                      "admin.example.com"])
     cands = p._candidates(h, svc)
-    # wildcards + bare IPs filtered out; real hostnames (incl. the provided one)
-    # are probed so content discovery runs on the domain, not the bare IP
-    assert set(cands) == {"www.example.com", "admin.example.com"}
-    assert "*.example.com" not in cands and "192.0.2.10" not in cands
+    assert cands == ["admin.example.com"]     # wildcard/IP/known filtered out
 
 
 def test_candidates_dedupe_case():

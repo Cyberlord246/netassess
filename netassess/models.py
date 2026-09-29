@@ -154,9 +154,6 @@ class HTTPService:
     response_ms: Optional[float] = None
     favicon_hash: str = ""
     discovered_paths: list[dict] = field(default_factory=list)
-    cdn: str = ""                   # detected CDN name, if any
-    waf: str = ""                   # detected WAF name, if any
-    fingerprint: str = ""           # stable response signature (for dedup/correlation)
 
     def to_dict(self) -> dict:
         d = asdict(self)
