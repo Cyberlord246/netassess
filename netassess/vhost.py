@@ -122,16 +122,21 @@ class VhostProber:
             status = int(lines[0].split()[1])
         except (IndexError, ValueError):
             return None
-        loc = ""
+        headers: dict[str, str] = {}
         for ln in lines[1:]:
-            if ln.lower().startswith(b"location:"):
-                loc = ln.split(b":", 1)[1].strip().decode("latin-1", "replace")
-                break
+            if b":" not in ln:
+                continue
+            k, _, v = ln.partition(b":")
+            headers[k.strip().lower().decode("latin-1", "replace")] = \
+                v.strip().decode("latin-1", "replace")
+        loc = headers.get("location", "")
         title = ""
         m = _TITLE_RE.search(body.decode("utf-8", "replace"))
         if m:
             title = re.sub(r"\s+", " ", m.group(1)).strip()[:120]
-        return {"status": status, "len": len(body), "title": title, "loc": loc}
+        return {"status": status, "len": len(body), "title": title, "loc": loc,
+                "headers": headers, "server": headers.get("server", ""),
+                "content_type": headers.get("content-type", "")}
 
     def _differs(self, base, r) -> bool:
         if r is None:
@@ -168,11 +173,17 @@ class VhostProber:
             vsvc = HTTPService(
                 url=url, ip=ip, port=port, scheme=scheme, status=r["status"],
                 title=r["title"], content_length=r["len"],
+                server=r.get("server", ""), content_type=r.get("content_type", ""),
+                headers=r.get("headers", {}),
             )
-            # fingerprint the vhost response so identical sites (e.g. many domains
-            # on one CDN IP returning the same parked/default page) collapse to a
-            # single content-discovery target instead of one per hostname.
-            from .techdetect import response_fingerprint
+            # full fingerprinting on the DOMAIN service: technology / CDN / WAF
+            # detection + a response fingerprint (so identical CDN sites collapse).
+            from .techdetect import (
+                cdn_of, detect_technologies, response_fingerprint, waf_of,
+            )
+            vsvc.technologies = detect_technologies(vsvc)
+            vsvc.cdn = cdn_of(vsvc.technologies)
+            vsvc.waf = waf_of(vsvc.headers)
             vsvc.fingerprint = response_fingerprint(vsvc)
             host.http_services.append(vsvc)
             findings.append(Finding(
