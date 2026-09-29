@@ -71,6 +71,7 @@ class ReportGenerator:
           "in redirects or DNS were **not** auto-added to scope.\n")
 
         w(self._attack_surface_summary())
+        w(self._web_inventory())
         w(self._live_hosts())
         w(self._reverse_dns())
         w(self._domains_section())
@@ -327,6 +328,71 @@ class ReportGenerator:
             lines.append("| _(none identified)_ | 0 |")
         return "\n".join(lines)
 
+    def _web_inventory(self) -> str:
+        from .web_inventory import build_inventory, inventory_summary
+        from .validation import display_state
+        assets = build_inventory(self.graph)
+        if not assets:
+            return ""
+        summ = inventory_summary(assets)
+        lines = ["\n## Web Attack-Surface Inventory\n",
+                 f"{summ['apps']} distinct web application(s) across "
+                 f"{summ['exposures']} exposure(s) "
+                 f"({summ['deduped']} duplicate(s) collapsed by response "
+                 f"fingerprint). {summ['with_vulns']} with vuln candidate(s), "
+                 f"{summ['with_misconfig']} with misconfiguration(s); "
+                 f"{summ['behind_cdn']} behind a CDN, {summ['behind_waf']} behind "
+                 "a WAF.\n",
+                 "_Distinct applications are deduplicated across hostnames/IPs; "
+                 "different apps on a shared IP are kept separate._\n"]
+        for a in assets:
+            flag = f" — risk {a.risk}/100 ({a.risk_band})" if a.risk else ""
+            lines.append(f"\n### {a.name}{flag}")
+            names = sorted(a.hostnames)
+            if len(names) > 1 or len(a.ips) > 1:
+                lines.append(f"- **Correlated exposures:** {a.exposure_count} "
+                             f"URL(s) across {len(names)} hostname(s) and "
+                             f"{len(a.ips)} IP(s)")
+            urls = ", ".join(sorted(e.url for e in a.exposures)[:4])
+            more = a.exposure_count - 4
+            lines.append(f"- **URL(s):** {urls}" + (f" (+{more} more)" if more > 0 else ""))
+            lines.append(f"- **IP:port:** " + ", ".join(sorted(
+                f"{e.ip}:{e.port}" for e in a.exposures)[:6]))
+            meta = [f"HTTP {a.status}" if a.status else "", a.scheme,
+                    f"title={a.title!r}" if a.title else "",
+                    f"server={a.server}" if a.server else ""]
+            lines.append("- **Response:** " + " · ".join(x for x in meta if x))
+            if a.technologies:
+                lines.append(f"- **Technologies:** {', '.join(a.technologies)}")
+            edge = " · ".join(x for x in (f"CDN: {a.cdn}" if a.cdn else "",
+                                          f"WAF: {a.waf}" if a.waf else "") if x)
+            if edge:
+                lines.append(f"- **Edge:** {edge}")
+            if a.tls_sans:
+                sans = sorted(a.tls_sans)
+                lines.append(f"- **TLS SANs:** {', '.join(sans[:8])}"
+                             + (f" (+{len(sans) - 8} more)" if len(sans) > 8 else ""))
+            if a.vhosts:
+                lines.append(f"- **Virtual hosts:** {', '.join(sorted(a.vhosts))}")
+            if a.endpoints:
+                cats = ", ".join(f"{k}×{v}" for k, v in
+                                 sorted(a.endpoint_categories.items()))
+                lines.append(f"- **Discovered endpoints ({len(a.endpoints)}):** {cats}")
+                if a.interesting_endpoints:
+                    ie = a.interesting_endpoints
+                    lines.append(f"- **Interesting endpoints:** "
+                                 + ", ".join(f"`{p}`" for p in ie[:10])
+                                 + (f" (+{len(ie) - 10} more)" if len(ie) > 10 else ""))
+            if a.misconfigurations:
+                lines.append(f"- **Misconfigurations:** {'; '.join(a.misconfigurations)}")
+            if a.info_leaks:
+                lines.append(f"- **Information leakage:** {'; '.join(a.info_leaks)}")
+            if a.vuln_candidates:
+                lines.append(f"- **Vulnerability candidates:** {'; '.join(a.vuln_candidates)}")
+            lines.append(f"- **Validation:** {display_state(a.validation)}  |  "
+                         f"**Risk:** {a.risk}/100 ({a.risk_band})")
+        return "\n".join(lines)
+
     def _correlation(self) -> str:
         lines = ["\n## Correlation (IP → Service → Version → Tech → Findings)\n"]
         chains = CorrelationEngine().correlate(self.graph)
@@ -443,6 +509,8 @@ class ReportGenerator:
 
     # -- json ------------------------------------------------------------- #
     def _json_export(self) -> dict:
+        from .web_inventory import build_inventory, inventory_summary
+        assets = build_inventory(self.graph)
         return {
             "scope": self.scope.summary(),
             "config": self.config.to_dict(),
@@ -451,5 +519,29 @@ class ReportGenerator:
                 {"asset": i.asset, "score": i.score,
                  "top_severity": i.top_severity, "reasons": i.reasons}
                 for i in PriorityEngine().prioritize(self.graph)
+            ],
+            "web_inventory_summary": inventory_summary(assets),
+            "web_inventory": [
+                {
+                    "name": a.name, "fingerprint": a.fingerprint,
+                    "scheme": a.scheme, "status": a.status, "title": a.title,
+                    "server": a.server, "technologies": a.technologies,
+                    "cdn": a.cdn, "waf": a.waf,
+                    "ips": sorted(a.ips), "hostnames": sorted(a.hostnames),
+                    "vhosts": sorted(a.vhosts), "tls_sans": sorted(a.tls_sans),
+                    "exposures": [
+                        {"url": e.url, "ip": e.ip, "port": e.port,
+                         "scheme": e.scheme, "hostname": e.hostname}
+                        for e in a.exposures
+                    ],
+                    "endpoint_categories": a.endpoint_categories,
+                    "interesting_endpoints": a.interesting_endpoints,
+                    "misconfigurations": a.misconfigurations,
+                    "information_leakage": a.info_leaks,
+                    "vulnerability_candidates": a.vuln_candidates,
+                    "validation": a.validation.value, "risk": a.risk,
+                    "risk_band": a.risk_band,
+                }
+                for a in assets
             ],
         }

@@ -73,8 +73,13 @@ class HTTPProbe(ServiceProbe):
             if svc is None:
                 return ProbeResult(error=err or err2)
 
-        from ..techdetect import detect_technologies
+        from ..techdetect import (
+            cdn_of, detect_technologies, response_fingerprint, waf_of,
+        )
         svc.technologies = detect_technologies(svc)
+        svc.cdn = cdn_of(svc.technologies)
+        svc.waf = waf_of(svc.headers)
+        svc.fingerprint = response_fingerprint(svc)
 
         # Confirmed HTTP: stamp the real identity on the port so a low-confidence
         # port-table guess (e.g. 'irdmi' on 7999) is corrected to http/https and
