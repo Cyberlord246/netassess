@@ -117,7 +117,7 @@ class AssessmentEngine:
         # and the plan the operator sees reflect what will actually happen.
         stages = [
             ("Host discovery",             lambda: self._phase_discovery(hosts), True,  self._sum_discovery),
-            ("Reverse DNS",                self._phase_rdns,        True,                self._sum_rdns),
+            ("Reverse DNS",                self._phase_rdns,        getattr(self.config, "reverse_dns", True), self._sum_rdns),
             ("Port scan",                  self._phase_portscan,    True,                self._sum_ports),
             ("Service identification",     self._phase_service_id,  True,                self._sum_services),
             ("Service & protocol probes",  self._phase_probe,       True,                self._sum_http),

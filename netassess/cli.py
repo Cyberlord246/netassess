@@ -103,6 +103,8 @@ def _build_config(args) -> Config:
         cfg.skip_discovery = True
     if getattr(args, "skip_portscan", False):
         cfg.skip_portscan = True
+    if getattr(args, "no_rdns", False):
+        cfg.reverse_dns = False
     if getattr(args, "output", None):
         cfg.output_dir = args.output
     if getattr(args, "ai_provider", None):
@@ -504,6 +506,9 @@ def _add_scan_args(sp: argparse.ArgumentParser):
                     help="skip the port scan; assume --ports are open and probe "
                          "them directly (best with a small --ports set, e.g. "
                          "80,443,8080,8443). Probes fail gracefully on closed ports")
+    sp.add_argument("--no-rdns", dest="no_rdns", action="store_true",
+                    help="skip reverse-DNS (PTR) enrichment — low value for a "
+                         "domain-list web scan where you already have hostnames")
     sp.add_argument("--output", help="output directory")
     sp.add_argument("--ai-provider", dest="ai_provider",
                     choices=["none", "anthropic"], default="none")
