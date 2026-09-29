@@ -101,6 +101,20 @@ def test_scan_hosts_passes_per_host_timeout():
     assert got == {"192.0.2.10": 0.3, "192.0.2.11": 1.5}
 
 
+def test_skip_portscan_assumes_configured_ports_open():
+    from ..engine import AssessmentEngine
+    from ..models import HostStatus
+    cfg = Config(targets=["192.0.2.10"], ports=[80, 443, 8080],
+                 skip_discovery=True, skip_portscan=True)
+    eng = AssessmentEngine(cfg, log=lambda *a, **k: None)
+    # seed a live host and run only the (skipped) port scan phase
+    h = eng.graph.get_or_create("192.0.2.10")
+    h.status = HostStatus.LIVE
+    eng._phase_portscan()
+    assert set(h.ports.keys()) == {80, 443, 8080}
+    assert all(p.state == PortState.OPEN for p in h.ports.values())
+
+
 def _run_all():
     fns = [v for k, v in globals().items() if k.startswith("test_")]
     for fn in fns:

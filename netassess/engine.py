@@ -22,7 +22,7 @@ from .content_discovery import ContentDiscovery, _BUNDLED_WORDLIST
 from .cve import CVEEngine
 from .discovery import DiscoveryEngine
 from .dns_recon import ReverseDNS
-from .models import HostStatus
+from .models import HostStatus, Port, PortState, Service
 from .ports import PortScanner, effective_timeout
 from .progress import Progress
 from .roles import classify, detect_anomalies
@@ -240,6 +240,26 @@ class AssessmentEngine:
             self._log("[ports] no live hosts to scan")
             return
         ports = self.config.effective_ports()
+
+        # Skip the scan entirely: assume the configured ports are open and let the
+        # service-ID + probe stages confirm which actually respond (probes fail
+        # gracefully on closed ports). Best paired with a small --ports set.
+        if self.config.skip_portscan:
+            for ip in targets:
+                host = self.graph.get_or_create(ip)
+                for num in ports:
+                    if num not in host.ports:
+                        host.ports[num] = Port(number=num, state=PortState.OPEN,
+                                               service=Service())
+            self._log(f"[ports] scan SKIPPED — assuming {len(ports)} configured "
+                      f"port(s) open on {len(targets)} host(s); probes will confirm "
+                      "which respond")
+            if len(ports) > 50:
+                self._log(f"[ports] NOTE: {len(ports)} ports/host will be probed "
+                          "directly — pair --skip-portscan with a small --ports set "
+                          "(e.g. 80,443,8080,8443) to keep this fast")
+            return
+
         # per-host adaptive timeout from discovery RTT (fast hosts wait less)
         host_timeouts = {
             ip: effective_timeout(self.graph.get_or_create(ip).latency_ms, self.config)

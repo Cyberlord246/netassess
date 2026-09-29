@@ -96,6 +96,8 @@ def _build_config(args) -> Config:
         cfg.discovery_mode = args.discovery
     if getattr(args, "skip_discovery", False):
         cfg.skip_discovery = True
+    if getattr(args, "skip_portscan", False):
+        cfg.skip_portscan = True
     if getattr(args, "output", None):
         cfg.output_dir = args.output
     if getattr(args, "ai_provider", None):
@@ -178,7 +180,10 @@ def cmd_scan(args) -> int:
     print(f" targets     : {', '.join(cfg.targets)}")
     if cfg.exclude:
         print(f" exclude     : {', '.join(cfg.exclude)}")
-    print(f" ports       : {'1-65535' if cfg.full_port_scan else str(len(cfg.effective_ports())) + ' ports'}")
+    _ports_desc = '1-65535' if cfg.full_port_scan else str(len(cfg.effective_ports())) + ' ports'
+    if cfg.skip_portscan:
+        _ports_desc += ' (scan SKIPPED — assumed open, probed directly)'
+    print(f" ports       : {_ports_desc}")
     print(f" concurrency : {cfg.concurrency}   rate: {cfg.rate}/s   timeout: {cfg.timeout}s")
     cve_status = ("offline+NVD" if cfg.cve_online else "offline KB") if cfg.cve_enabled else "off"
     print(f" cve         : {cve_status}   html: {'yes' if cfg.html_report else 'no'}")
@@ -455,6 +460,10 @@ def _add_scan_args(sp: argparse.ArgumentParser):
                          "TCP-connect). Default auto.")
     sp.add_argument("--skip-discovery", dest="skip_discovery", action="store_true",
                     help="skip discovery; treat every in-scope host as live")
+    sp.add_argument("--skip-portscan", dest="skip_portscan", action="store_true",
+                    help="skip the port scan; assume --ports are open and probe "
+                         "them directly (best with a small --ports set, e.g. "
+                         "80,443,8080,8443). Probes fail gracefully on closed ports")
     sp.add_argument("--output", help="output directory")
     sp.add_argument("--ai-provider", dest="ai_provider",
                     choices=["none", "anthropic"], default="none")

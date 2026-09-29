@@ -60,6 +60,7 @@ class Config:
     # --- discovery --------------------------------------------------------
     discovery_ports: list[int] = field(default_factory=lambda: [443, 80, 22, 445, 3389])
     skip_discovery: bool = False      # treat all in-scope hosts as live
+    skip_portscan: bool = False       # skip the scan; assume --ports open, probe directly
     discovery_mode: str = "auto"      # auto | nmap | tcp
     #  auto : nmap -sn if available (+ TCP fallback for the rest), else TCP
     #  nmap : nmap -sn only
