@@ -105,6 +105,8 @@ def _build_config(args) -> Config:
         cfg.skip_portscan = True
     if getattr(args, "no_rdns", False):
         cfg.reverse_dns = False
+    if getattr(args, "http_tool", None):
+        cfg.http_tool = args.http_tool
     if getattr(args, "output", None):
         cfg.output_dir = args.output
     if getattr(args, "ai_provider", None):
@@ -247,6 +249,17 @@ def cmd_scan(args) -> int:
     print(f" cve         : {cve_status}   html: {'yes' if cfg.html_report else 'no'}")
     print(f" report      : min-severity={cfg.report_min_severity}   "
           f"aggregate={'yes' if cfg.report_aggregate else 'no'}")
+    if cfg.http_tool != "builtin":
+        from .adapters.httpx_adapter import HttpxAdapter
+        hx = HttpxAdapter().available()
+        if cfg.http_tool == "httpx":
+            print(f" http probe  : httpx" + ("" if hx else " (NOT FOUND -> built-in)"))
+        elif hx:
+            print(f" http probe  : httpx (fast bulk)")
+        else:
+            print(f" http probe  : built-in (httpx not installed)")
+    else:
+        print(f" http probe  : built-in")
     if cfg.content_discovery:
         from .adapters.feroxbuster_adapter import FeroxbusterAdapter
         has_ferox = FeroxbusterAdapter().available()
@@ -528,6 +541,10 @@ def _add_scan_args(sp: argparse.ArgumentParser):
     sp.add_argument("--rdns", dest="rdns", action="store_true",
                     help="force reverse-DNS on (it is off by default in the "
                          "auto-detected 'web' profile for a domain list)")
+    sp.add_argument("--http-tool", dest="http_tool",
+                    choices=["auto", "httpx", "builtin"],
+                    help="HTTP-probe backend: auto (use ProjectDiscovery httpx if "
+                         "installed, else built-in), httpx (force), builtin")
     sp.add_argument("--output", help="output directory")
     sp.add_argument("--ai-provider", dest="ai_provider",
                     choices=["none", "anthropic"], default="none")

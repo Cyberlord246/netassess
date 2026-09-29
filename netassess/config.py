@@ -93,6 +93,9 @@ class Config:
     cve_nvd_cache: Optional[str] = None  # offline NVD sync cache (default ~/.netassess/nvd.json)
     kev_cache: Optional[str] = None   # CISA KEV + EPSS cache (default ~/.netassess/kev.json)
 
+    # --- http probing -----------------------------------------------------
+    http_tool: str = "auto"           # auto | httpx | builtin (bulk HTTP fingerprint)
+
     # --- content discovery ------------------------------------------------
     content_discovery: bool = False   # probe common web paths (GET-only, opt-in)
     content_wordlist: Optional[str] = None  # extra paths to append to the builtin set

@@ -54,6 +54,7 @@ class AssessmentEngine:
         self.cve = self._build_cve_engine(config)
         self.content = ContentDiscovery(config, self.scope) if config.content_discovery else None
         self.ferox = self._build_ferox(config)
+        self.httpx = self._build_httpx(config)
         self.udp = UDPScanner(config, self.scope) if config.udp_scan else None
         self.vhost = VhostProber(config, self.scope) if config.vhost_probe else None
         self.nuclei = self._build_nuclei(config)
@@ -75,6 +76,15 @@ class AssessmentEngine:
         if config.content_tool == "feroxbuster":
             return adapter          # explicit request; used even if we must warn
         return adapter if adapter.available() else None  # auto
+
+    def _build_httpx(self, config: Config):
+        if getattr(config, "http_tool", "auto") == "builtin":
+            return None
+        from .adapters.httpx_adapter import HttpxAdapter
+        adapter = HttpxAdapter()
+        if config.http_tool == "httpx":
+            return adapter          # explicit request; used even if we must warn
+        return adapter if adapter.available() else None   # auto
 
     def _build_cve_engine(self, config: Config):
         if not config.cve_enabled:
@@ -317,6 +327,16 @@ class AssessmentEngine:
         if not tasks:
             self._log("[probe] no probe targets")
             return
+
+        # Fast bulk HTTP fingerprint via httpx (if active): identifies + fingerprints
+        # all candidate web endpoints in one async pass, far faster than the built-in
+        # per-service GET. When it runs, the built-in HTTPProbe is dropped from the
+        # loop (httpx did the fetch); misconfig checks still run on confirmed services.
+        httpx_web = self._run_httpx_bulk() if self._httpx_active() else None
+        probes = self.probes
+        if httpx_web is not None:
+            probes = [p for p in self.probes if p.name != "http"]
+
         self._log(f"[probe] running {len(tasks)} probe task(s) "
                   f"(mode={self.config.mode})…")
 
@@ -325,8 +345,9 @@ class AssessmentEngine:
             if host is None or task.port not in host.ports:
                 return
             port = host.ports[task.port]
-            confirmed = False
-            for probe in self.probes:
+            # already confirmed as a web service by httpx -> no generic banner grab
+            confirmed = bool(httpx_web) and (host.ip, port.number) in httpx_web
+            for probe in probes:
                 if not probe.matches(port):
                     continue
                 # a probe "confirms" when it identifies the service without error;
@@ -345,6 +366,65 @@ class AssessmentEngine:
                 self.progress.bump(total, "services tested")
         self._log(f"[probe] complete — {len(self.graph.all_http_services())} "
                   "HTTP service(s) analysed")
+
+    def _httpx_active(self) -> bool:
+        return self.httpx is not None and self.httpx.available()
+
+    def _run_httpx_bulk(self):
+        """Bulk-fingerprint candidate web endpoints with httpx. Returns the set of
+        (ip, port) confirmed as web (services populated on the graph), or None to
+        fall back to the built-in probe."""
+        from .services import is_probably_http
+
+        index: dict[str, tuple] = {}     # "ip:port" -> (host, port)
+        for host in self.graph.hosts.values():
+            for port in host.open_ports():
+                if not is_probably_http(port):
+                    continue
+                if not self.scope.authorize(host.ip, port.number).allowed:
+                    continue
+                index[f"{host.ip}:{port.number}"] = (host, port)
+        if not index:
+            return set()
+
+        self._log(f"[http] bulk-probing {len(index)} candidate web endpoint(s) "
+                  "via httpx…")
+        records, res = self.httpx.probe(
+            sorted(index), timeout=int(self.config.timeout),
+            threads=self.config.concurrency, rate=self.config.rate)
+        if res.not_found:
+            self._log("[http] httpx not usable — using built-in HTTP probe")
+            return None
+
+        httpprobe = next((p for p in self.probes if p.name == "http"), None)
+        confirmed: set = set()
+        added = 0
+        for rec in records:
+            key = str(rec.get("input") or rec.get("host") or "")
+            hp = index.get(key)
+            if hp is None:                # try to recover ip:port from the url
+                continue
+            host, port = hp
+            svc = self.httpx.to_http_service(rec, host.ip, port.number)
+            host.http_services.append(svc)
+            # stamp the confirmed identity on the port
+            port.service.name = "https" if svc.scheme == "https" else "http"
+            port.service.confidence = self._high_conf()
+            port.service.evidence = f"httpx: HTTP {svc.status}"
+            # safe misconfig checks (OPTIONS/TRACE/dir-listing) that httpx doesn't do
+            if httpprobe is not None:
+                for f in httpprobe.misconfig(host, port, svc):
+                    host.add_finding(f)
+            confirmed.add((host.ip, port.number))
+            added += 1
+        self._log(f"[http] httpx confirmed {added} web service(s) of {len(index)} "
+                  "candidate(s)")
+        return confirmed
+
+    @staticmethod
+    def _high_conf():
+        from .models import Confidence
+        return Confidence.HIGH
 
     def _run_probe_safe(self, probe, host, port) -> bool:
         """Run one probe; add its findings. Returns True if it positively
