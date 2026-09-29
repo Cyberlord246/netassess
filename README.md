@@ -90,15 +90,29 @@ discovery), and `pip install "netassess[ai] @ git+..."` for the LLM mode.
 
 ## Usage
 
+See **[USAGE.md](USAGE.md)** for the full command and option reference.
+
+The easiest way to run a good scan is to pick a **profile** — a one-flag preset:
+
 ```bash
-netassess network scan --targets targets.txt --mode auto
+netassess scan --targets targets.txt --profile quick      # fast triage (~40 ports)
+netassess scan --targets targets.txt --profile standard   # balanced default
+netassess scan --targets targets.txt --profile deep       # deep detection + content + nuclei
+netassess scan --targets targets.txt --profile web        # web ports + content + nuclei
+```
+
+Any explicit flag still overrides the profile (`--profile deep --ports 22,80,443`).
+More examples:
+
+```bash
 netassess network scan --targets 192.0.2.10,192.0.2.0/24 --content-discovery
+netassess scan --targets 203.0.113.5 --http-tool httpx --udp
 netassess scope check --targets 10.0.0.0/24 --exclude 10.0.0.1
 netassess diff --old baseline/state.json --new latest/state.json --fail-on worse
 ```
 
 (Not installed as a command yet? Run it as a module from the repo root:
-`python -m netassess network scan ...`.)
+`python -m netassess scan ...`.)
 
 ## Highlights
 
