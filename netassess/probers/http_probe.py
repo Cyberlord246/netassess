@@ -196,6 +196,16 @@ class HTTPProbe(ServiceProbe):
             except (http.client.HTTPException, ssl.SSLError, socket.timeout, OSError):
                 return None
 
+    def misconfig(self, host: Host, port: Port, svc: HTTPService) -> list[Finding]:
+        """Public: run the safe OPTIONS/TRACE/dir-listing checks against an
+        already-fingerprinted service (e.g. one httpx confirmed). Scope-gated."""
+        if not self.in_scope(host.ip, port.number):
+            return []
+        try:
+            return self._misconfig_checks(host, port, svc)
+        except Exception:
+            return []
+
     def _misconfig_checks(self, host: Host, port: Port, svc: HTTPService) -> list[Finding]:
         """HTTP server misconfigurations (excludes cookie flags / CORS / missing
         security headers / CSP / clickjacking by design)."""
