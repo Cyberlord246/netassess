@@ -29,6 +29,10 @@ PROBER_PORTS = {
 DEFAULT_PORTS = sorted(set(TOP_1000_TCP) | set(COMMON_40) | PROBER_PORTS)
 COMMON_PORTS = list(COMMON_40)
 
+# Common web ports — the safe default set when the port scan is skipped and the
+# operator gave no explicit --ports (prevents assuming all ~1000 ports open).
+WEB_PORTS = [80, 443, 8080, 8443, 8000, 8888, 8008, 8081, 3000, 5000, 9000, 9443]
+
 
 @dataclass
 class Config:

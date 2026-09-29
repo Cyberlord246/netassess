@@ -13,7 +13,7 @@ import argparse
 import os
 import sys
 
-from .config import Config, COMMON_PORTS, DEFAULT_PORTS
+from .config import Config, COMMON_PORTS, DEFAULT_PORTS, WEB_PORTS
 from .engine import AssessmentEngine
 from .report import ReportGenerator
 from .scope import ScopeEngine
@@ -77,6 +77,11 @@ def _build_config(args) -> Config:
         cfg.ports = ports
     elif getattr(args, "common_ports", False):  # fast 40-port preset
         cfg.ports = list(COMMON_PORTS)
+    elif getattr(args, "skip_portscan", False):
+        # skipping the scan assumes ports are open; without an explicit set,
+        # limit to common web ports so we don't probe ~1000 assumed-open ports
+        # on every host (which explodes into hundreds of thousands of tasks).
+        cfg.ports = list(WEB_PORTS)
     # else: keep the default (top-1000 TCP)
     cfg.full_port_scan = getattr(args, "full_port_scan", False)
     cfg.deep = getattr(args, "deep", False)
@@ -209,6 +214,12 @@ def cmd_scan(args) -> int:
     print(f" targets     : {tdesc}")
     if cfg.exclude:
         print(f" exclude     : {', '.join(cfg.exclude)}")
+    _explicit_ports = bool(_parse_ports(getattr(args, "ports", None))) or \
+        getattr(args, "common_ports", False)
+    if cfg.skip_portscan and not _explicit_ports and not cfg.full_port_scan:
+        print(f" note        : --skip-portscan without --ports → limited to "
+              f"{len(WEB_PORTS)} common web ports "
+              f"({','.join(map(str, WEB_PORTS[:6]))}…); pass --ports to change")
     _ports_desc = '1-65535' if cfg.full_port_scan else str(len(cfg.effective_ports())) + ' ports'
     if cfg.skip_portscan:
         _ports_desc += ' (scan SKIPPED — assumed open, probed directly)'
