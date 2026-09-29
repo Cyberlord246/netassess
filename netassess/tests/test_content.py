@@ -293,6 +293,43 @@ def test_odd_web_port_is_http_identified_and_content_discovered():
         srv.shutdown()
 
 
+def test_content_target_selection_dedupes_and_skips():
+    from ..engine import AssessmentEngine
+    from ..models import Host, HTTPService
+
+    def svc(ip, port, scheme, status, fp, chain=None):
+        s = HTTPService(url=f"{scheme}://{ip}:{port}/", ip=ip, port=port,
+                        scheme=scheme, status=status, redirect_chain=chain or [])
+        s.fingerprint = fp
+        return s
+
+    hA = Host(ip="43.159.107.36")
+    # :80 and :443 serve identical content (same fingerprint) -> keep ONE (:443)
+    s80 = svc("43.159.107.36", 80, "http", 200, "FP1")
+    s443 = svc("43.159.107.36", 443, "https", 200, "FP1")
+    # a blocked service (403) -> skipped
+    hB = Host(ip="10.0.0.9")
+    s403 = svc("10.0.0.9", 443, "https", 403, "FPX")
+    # a :80 that only redirects to its :443 sibling -> skipped (sibling covered)
+    hC = Host(ip="10.0.0.10")
+    r80 = svc("10.0.0.10", 80, "http", 301, "FPr", ["301 -> https://10.0.0.10/"])
+    r443 = svc("10.0.0.10", 443, "https", 200, "FP2")
+    # a distinct app -> kept
+    hD = Host(ip="10.0.0.11")
+    sD = svc("10.0.0.11", 443, "https", 200, "FP3")
+
+    services = [(hA, s80), (hA, s443), (hB, s403),
+                (hC, r80), (hC, r443), (hD, sD)]
+    eng = AssessmentEngine(Config(targets=["43.159.107.36/32"],
+                                  content_discovery=True), log=lambda *a, **k: None)
+    targets, stats = eng._select_content_targets(services)
+    picked = sorted(f"{s.ip}:{s.port}" for _h, s in targets)
+    assert picked == ["10.0.0.10:443", "10.0.0.11:443", "43.159.107.36:443"]
+    assert stats["dupe"] == 1        # :80/:443 identical collapsed
+    assert stats["blocked"] == 1     # the 403
+    assert stats["redirect"] == 1    # :80 -> :443
+
+
 def _run_all():
     fns = [v for k, v in globals().items() if k.startswith("test_")]
     for fn in fns:

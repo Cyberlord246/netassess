@@ -470,12 +470,32 @@ class AssessmentEngine:
             self._log("[content] feroxbuster requested but not found on PATH — "
                       "falling back to built-in probe")
 
+        # Intelligent target selection: only content-discover working, canonical,
+        # UNIQUE web roots — skip blocked/broken responses (403/500/400/…), skip a
+        # :80 that just redirects to its :443 sibling, and collapse services that
+        # return the same response (e.g. :80 and :443 serving identical content).
+        services, sel = self._select_content_targets(services)
+        if not services:
+            self._log("[content] no workable/unique web root to enumerate "
+                      f"(skipped {sel['blocked']} blocked/broken, "
+                      f"{sel['redirect']} redirect-to-sibling, {sel['dupe']} duplicate)")
+            return
+
         backend = "feroxbuster" if use_ferox else "built-in"
-        web_list = ", ".join(sorted(f"{ip}:{port}" for ip, port in web_ports))
-        self._log(f"[content] {len(services)} web service(s) qualify for content "
-                  f"discovery: {web_list}")
+        web_list = ", ".join(sorted(f"{s.ip}:{s.port}" for _h, s in services))
+        self._log(f"[content] {len(services)} unique web root(s) selected for "
+                  f"content discovery: {web_list}")
+        drop = []
+        if sel["blocked"]:
+            drop.append(f"{sel['blocked']} blocked/broken (403/500/400/…)")
+        if sel["redirect"]:
+            drop.append(f"{sel['redirect']} redirect-to-sibling (e.g. :80→:443)")
+        if sel["dupe"]:
+            drop.append(f"{sel['dupe']} duplicate response")
+        if drop:
+            self._log("[content] skipped " + ", ".join(drop))
         if skipped:
-            self._log(f"[content] skipping {sum(skipped.values())} non-web port(s): "
+            self._log(f"[content] non-web ports (assessed by protocol probes): "
                       + ", ".join(f"{k}×{v}" for k, v in sorted(skipped.items())))
         self._log(f"[content] enumerating web content via {backend}…")
 
@@ -510,6 +530,59 @@ class AssessmentEngine:
         note = (f" ({sni_passes} HTTPS vhost(s) via SNI-aware built-in pass)"
                 if sni_passes else "")
         self._log(f"[content] {added} path finding(s) added{note}")
+
+    # base responses that indicate a service not worth content discovery
+    _CONTENT_SKIP_STATUS = {400, 401, 403, 405, 429, 500, 502, 503}
+    _REDIRECT_STATUS = {301, 302, 303, 307, 308}
+
+    def _select_content_targets(self, services):
+        """Pick working, canonical, UNIQUE web roots for content discovery.
+
+        Drops: (1) blocked/broken base responses (403/500/400/401/…), (2) a
+        service whose root only redirects to a sibling service we already cover
+        (e.g. :80 → :443), and (3) duplicates that return the same response
+        fingerprint (same app on :80 and :443, or many names → one site).
+        Returns (targets, stats)."""
+        from urllib.parse import urlparse
+
+        stats = {"blocked": 0, "redirect": 0, "dupe": 0}
+
+        # (1) drop blocked/broken base responses
+        workable = []
+        for host, svc in services:
+            if svc.status in self._CONTENT_SKIP_STATUS:
+                stats["blocked"] += 1
+                continue
+            workable.append((host, svc))
+
+        have = {(s.ip, s.port) for _h, s in workable}
+
+        # (2) drop a root that just redirects to a sibling service we already have
+        non_redirect = []
+        for host, svc in workable:
+            if svc.status in self._REDIRECT_STATUS and svc.redirect_chain:
+                loc = svc.redirect_chain[0]
+                tgt_https = "https://" in loc.lower()
+                tgt_port = 443 if tgt_https else 80
+                if tgt_port != svc.port and (svc.ip, tgt_port) in have:
+                    stats["redirect"] += 1
+                    continue
+            non_redirect.append((host, svc))
+
+        # (3) collapse identical responses by fingerprint (prefer https / :443)
+        groups: dict = {}
+        for host, svc in non_redirect:
+            key = svc.fingerprint or f"{svc.ip}:{svc.port}:{svc.url}"
+            groups.setdefault(key, []).append((host, svc))
+        targets = []
+        for grp in groups.values():
+            grp.sort(key=lambda hs: (hs[1].scheme != "https", hs[1].port != 443,
+                                     hs[1].port))
+            targets.append(grp[0])
+            stats["dupe"] += len(grp) - 1
+
+        targets.sort(key=lambda hs: (hs[1].ip, hs[1].port))
+        return targets, stats
 
     def _run_ferox(self, host, svc):
         wordlist = self.config.content_wordlist or _BUNDLED_WORDLIST
