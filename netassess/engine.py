@@ -494,6 +494,8 @@ class AssessmentEngine:
         self._log(f"[content] {len(services)} unique web root(s) selected for "
                   f"content discovery: {shown}")
         drop = []
+        if sel.get("ip_generic"):
+            drop.append(f"{sel['ip_generic']} bare-IP root (covered by its domains)")
         if sel["blocked"]:
             drop.append(f"{sel['blocked']} blocked/broken (403/500/400/…)")
         if sel["redirect"]:
@@ -553,7 +555,24 @@ class AssessmentEngine:
         Returns (targets, stats)."""
         from urllib.parse import urlparse
 
-        stats = {"blocked": 0, "redirect": 0, "dupe": 0}
+        stats = {"blocked": 0, "redirect": 0, "dupe": 0, "ip_generic": 0}
+
+        def _is_domain(svc):
+            h = urlparse(svc.url).hostname or ""
+            return bool(h) and h != svc.ip
+
+        # (0) prefer DOMAIN-named roots: if an IP has any hostname-based web service
+        # (a resolved domain / vhost), drop that IP's bare-IP root — on a shared/CDN
+        # IP it is just the generic default response, and content discovery belongs
+        # on the domains, not the IP.
+        ips_with_domain = {s.ip for _h, s in services if _is_domain(s)}
+        prefer_domain = []
+        for host, svc in services:
+            if svc.ip in ips_with_domain and not _is_domain(svc):
+                stats["ip_generic"] += 1
+                continue
+            prefer_domain.append((host, svc))
+        services = prefer_domain
 
         # (1) drop blocked/broken base responses
         workable = []

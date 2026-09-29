@@ -330,6 +330,33 @@ def test_content_target_selection_dedupes_and_skips():
     assert stats["redirect"] == 1    # :80 -> :443
 
 
+def test_content_prefers_domains_over_bare_ip_root():
+    from ..engine import AssessmentEngine
+    from ..models import Host, HTTPService
+    from urllib.parse import urlparse
+
+    def svc(ip, url, status=200, fp="", title=""):
+        s = HTTPService(url=url, ip=ip, port=443, scheme="https", status=status,
+                        title=title)
+        s.fingerprint = fp
+        return s
+
+    h = Host(ip="15.197.252.58")
+    base = svc("15.197.252.58", "https://15.197.252.58:443/", 404, "FPb", "NF")
+    d1 = svc("15.197.252.58", "https://app.example.com:443/", 200, "F1", "App")
+    d2 = svc("15.197.252.58", "https://api.example.com:443/", 200, "F2", "API")
+    h2 = Host(ip="203.0.113.9")     # dedicated IP, no domain -> keep the IP root
+    solo = svc("203.0.113.9", "https://203.0.113.9:443/", 200, "F3", "Solo")
+
+    eng = AssessmentEngine(Config(targets=["15.197.252.58/32"],
+                                  content_discovery=True), log=lambda *a, **k: None)
+    targets, stats = eng._select_content_targets(
+        [(h, base), (h, d1), (h, d2), (h2, solo)])
+    hosts = sorted(urlparse(s.url).hostname for _h, s in targets)
+    assert hosts == ["203.0.113.9", "api.example.com", "app.example.com"]
+    assert stats["ip_generic"] == 1     # the CDN bare-IP root was dropped
+
+
 def _run_all():
     fns = [v for k, v in globals().items() if k.startswith("test_")]
     for fn in fns:
