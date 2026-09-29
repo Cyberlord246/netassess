@@ -209,6 +209,12 @@ def cmd_scan(args) -> int:
         cfg.reverse_dns = (profile != "web")
     if getattr(args, "rdns", False):
         cfg.reverse_dns = True
+    # Virtual-host discovery is a WEB attack-surface expansion technique: on for a
+    # web (domain) scan, off for a network (IP/CIDR) scan — unless set explicitly.
+    if not (getattr(args, "vhosts", False) or getattr(args, "no_vhosts", False)):
+        cfg.vhost_probe = (profile != "network")
+    if getattr(args, "vhosts", False):
+        cfg.vhost_probe = True
     if cfg.exclude:                     # resolve hostname exclusions too
         ex = expand_targets(cfg.exclude, timeout=cfg.timeout,
                             concurrency=cfg.concurrency)
@@ -224,9 +230,11 @@ def cmd_scan(args) -> int:
     print("=" * 60)
     print(f" mode        : {cfg.mode}")
     _profile_desc = {
-        "web": "web (domain list — reverse-DNS off, hostnames used as Host/SNI)",
-        "network": "network (IPs/CIDRs — reverse-DNS on for host naming)",
-        "mixed": "mixed (domains + IPs)",
+        "web": "web (domains) — HTTP/TLS + vhost + web inventory; reverse-DNS off, "
+               "hostnames used as Host/SNI",
+        "network": "network (IPs/CIDRs) — ports + services + protocols + CVE; "
+                   "vhost discovery off, reverse-DNS on",
+        "mixed": "mixed (domains + IPs) — full pipeline",
     }.get(profile, profile)
     print(f" profile     : {_profile_desc}")
     tdesc = ", ".join(cfg.targets[:6]) + (f" (+{len(cfg.targets) - 6} more)"
@@ -495,8 +503,11 @@ def _add_scan_args(sp: argparse.ArgumentParser):
     sp.add_argument("--udp-ports", dest="udp_ports",
                     help="UDP ports to scan, e.g. 53,123,161 (default: common set)")
     sp.add_argument("--no-vhosts", dest="no_vhosts", action="store_true",
-                    help="disable virtual-host discovery (it runs by default: probes "
-                         "TLS SAN/CN hostnames via SNI+Host on the same in-scope IP)")
+                    help="disable virtual-host discovery (default-on for a web/domain "
+                         "scan, default-off for a network/IP scan)")
+    sp.add_argument("--vhosts", dest="vhosts", action="store_true",
+                    help="force virtual-host discovery on (e.g. for an IP scan where "
+                         "it is off by default)")
     sp.add_argument("--no-progress", dest="no_progress", action="store_true",
                     help="suppress the staged plan + live progress output")
     sp.add_argument("--no-validate", dest="no_validate", action="store_true",
