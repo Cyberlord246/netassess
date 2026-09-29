@@ -30,17 +30,42 @@ pip3 install -e .        # then: netassess <command> [options]
 
 ---
 
-## Input decides the pipeline (profile)
+## Profiles — one-flag presets (`--profile`)
 
-netassess detects what you gave it and adapts. Explicit flags always override.
+Don't want to hand-pick flags? Pick a profile. Each is a bundle of sensible
+options; **any explicit flag still overrides the profile.**
 
-| You provide | Profile | Reverse DNS | Virtual-host discovery |
+| `--profile` | What it does | Use when |
+|---|---|---|
+| `quick` | ~40 high-signal ports, banner service ID, CVE. No content discovery/nuclei. | First look, or a large scope you want triaged fast. |
+| `standard` *(default)* | Nmap top-1000 ports, service/version ID, protocol probes, TLS, CVE. | The balanced everyday scan (unchanged default behavior). |
+| `deep` | top-1000 ports, **deep** service detection, **content discovery**, **nuclei** (if installed). | A thorough audit of a handful of hosts. |
+| `web` | probes common web ports directly (skips full port scan), **vhost discovery**, **content discovery**, **nuclei**. | Web-app / domain-focused assessment. |
+
+```bash
+python3 -m netassess scan --targets targets.txt --profile quick     # fast triage
+python3 -m netassess scan --targets targets.txt --profile deep       # thorough
+python3 -m netassess scan --targets domains.txt --profile web        # web focus
+# override any single option, e.g. keep deep but pin the ports:
+python3 -m netassess scan --targets targets.txt --profile deep --ports 22,80,443
+```
+
+The scan banner prints the active profile and exactly which options it enabled.
+
+---
+
+## Scan type — auto-detected from your input
+
+Independently of `--profile`, netassess detects *what kind of target* you gave it
+and adapts the pipeline. Explicit flags always override.
+
+| You provide | Scan type | Reverse DNS | Virtual-host discovery |
 |---|---|---|---|
 | domains / URLs (`domains.txt`) | **web** | off (names already known) | on (SNI+Host vhosts) |
 | IPs / CIDRs (`10.0.0.0/24`) | **network** | on (name the IPs) | off |
 | both | **mixed** | on | on |
 
-The banner prints the detected profile, and the staged plan reflects it.
+The banner prints the detected scan type, and the staged plan reflects it.
 
 ---
 
@@ -50,6 +75,7 @@ The banner prints the detected profile, and the staged plan reflects it.
 | Option | Meaning |
 |---|---|
 | `--targets TARGETS` | **required**. File path, or comma-separated IPs/CIDRs/hostnames/URLs. Hostnames are resolved to IPs (their IPs become scope); markdown `[x](url)` and `https://…/path` entries are cleaned. |
+| `--profile {quick,standard,deep,web}` | one-flag preset (default `standard`). See [Profiles](#profiles--one-flag-presets---profile). Any explicit flag overrides it. |
 | `--exclude EXCLUDE` | file/comma IPs/CIDRs/hostnames to exclude (exclusions always win). |
 | `--output OUTPUT` | output directory (default `netassess-out`). |
 
@@ -130,14 +156,13 @@ The banner prints the detected profile, and the staged plan reflects it.
 
 ## Recipes
 
-### Web attack surface from a domain list (fast)
+### Web attack surface from a domain list
 ```bash
-python3 -m netassess scan --targets domains.txt \
-  --skip-discovery --skip-portscan --ports 80,443 \
-  --content-discovery
+python3 -m netassess scan --targets domains.txt --profile web
 ```
-Resolves domains → IPs (keeps Host/SNI), skips discovery + port scan, probes only
-web ports, dedupes `:80`/`:443`, and produces the correlated web inventory.
+Resolves domains → IPs (keeps Host/SNI), probes web ports directly, discovers
+vhosts + content, and produces the correlated web inventory. (Long form:
+`--skip-portscan --ports 80,443 --content-discovery --vhosts`.)
 
 ### Full network sweep of an IP range
 ```bash
@@ -147,8 +172,15 @@ All default ports + UDP, reverse-DNS on, protocol probes, CVE/KEV, service inven
 
 ### Fast triage of a large scope
 ```bash
-python3 -m netassess scan --targets targets.txt --common-ports --rate 500 --timeout 1.5
+python3 -m netassess scan --targets targets.txt --profile quick --rate 500 --timeout 1.5
 ```
+`--profile quick` uses ~40 high-signal ports; the extra flags push throughput.
+
+### Thorough audit of a few hosts
+```bash
+python3 -m netassess scan --targets targets.txt --profile deep
+```
+Deep service detection + content discovery + nuclei (if installed).
 
 ### Enrich with exploitation intel (offline, once)
 ```bash

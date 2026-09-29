@@ -68,6 +68,15 @@ def _parse_ports(spec: str | None) -> list[int] | None:
 
 
 def _build_config(args) -> Config:
+    # Apply a profile preset first: it fills in only options the user left at
+    # their default, so explicit flags below always win. `standard` is a no-op.
+    from .profiles import apply_profile, DEFAULT_PROFILE
+    prof = getattr(args, "profile", None) or DEFAULT_PROFILE
+    if prof != DEFAULT_PROFILE:
+        args._profile_applied = apply_profile(args, prof)
+    else:
+        args._profile_applied = []
+
     cfg = Config()
     cfg.targets = _read_targets(getattr(args, "targets", None))
     cfg.exclude = _read_targets(getattr(args, "exclude", None))
@@ -229,14 +238,29 @@ def cmd_scan(args) -> int:
     print(" netassess — authorized network attack-surface assessment")
     print("=" * 60)
     print(f" mode        : {cfg.mode}")
-    _profile_desc = {
+    _preset = getattr(args, "profile", None) or "standard"
+    from .profiles import describe as _describe_preset
+    _applied = getattr(args, "_profile_applied", [])
+    if _preset != "standard" and _applied:
+        _labels = {
+            "common_ports": "fast ~40 ports", "deep": "deep probes",
+            "content_discovery": "content discovery", "nuclei": "nuclei",
+            "skip_portscan": "skip port scan (probe web ports)",
+            "vhosts": "vhost discovery", "no_rdns": "reverse-DNS off",
+        }
+        _en = ", ".join(_labels.get(k, k) for k in _applied)
+        print(f" profile     : {_preset} — {_describe_preset(_preset)}")
+        print(f"               enabled: {_en}")
+    else:
+        print(f" profile     : {_preset} — {_describe_preset(_preset)}")
+    _scan_type_desc = {
         "web": "web (domains) — HTTP/TLS + vhost + web inventory; reverse-DNS off, "
                "hostnames used as Host/SNI",
         "network": "network (IPs/CIDRs) — ports + services + protocols + CVE; "
                    "vhost discovery off, reverse-DNS on",
         "mixed": "mixed (domains + IPs) — full pipeline",
     }.get(profile, profile)
-    print(f" profile     : {_profile_desc}")
+    print(f" scan type   : {_scan_type_desc}")
     tdesc = ", ".join(cfg.targets[:6]) + (f" (+{len(cfg.targets) - 6} more)"
                                           if len(cfg.targets) > 6 else "")
     print(f" targets     : {tdesc}")
@@ -482,8 +506,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _add_scan_args(sp: argparse.ArgumentParser):
+    from .profiles import profile_names, help_text, DEFAULT_PROFILE
     sp.add_argument("--targets", required=True,
                     help="file path, or comma-separated IPs/CIDRs")
+    sp.add_argument("--profile", choices=profile_names(), default=DEFAULT_PROFILE,
+                    metavar="{quick,standard,deep,web}",
+                    help=help_text())
     sp.add_argument("--exclude", help="file/comma IPs/CIDRs to exclude")
     sp.add_argument("--mode", choices=["deterministic", "ai", "auto"],
                     default="deterministic")
