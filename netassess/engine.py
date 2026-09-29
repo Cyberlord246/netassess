@@ -482,9 +482,17 @@ class AssessmentEngine:
             return
 
         backend = "feroxbuster" if use_ferox else "built-in"
-        web_list = ", ".join(sorted(f"{s.ip}:{s.port}" for _h, s in services))
+        from urllib.parse import urlparse
+
+        def _label(svc):
+            h = urlparse(svc.url).hostname or ""
+            return h if (h and h != svc.ip) else f"{svc.ip}:{svc.port}"
+
+        names = sorted({_label(s) for _h, s in services})
+        shown = ", ".join(names[:15]) + (f" (+{len(names) - 15} more)"
+                                         if len(names) > 15 else "")
         self._log(f"[content] {len(services)} unique web root(s) selected for "
-                  f"content discovery: {web_list}")
+                  f"content discovery: {shown}")
         drop = []
         if sel["blocked"]:
             drop.append(f"{sel['blocked']} blocked/broken (403/500/400/…)")

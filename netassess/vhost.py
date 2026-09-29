@@ -164,10 +164,16 @@ class VhostProber:
             if not self._differs(base, r):
                 continue
             url = f"{scheme}://{name}:{port}/"
-            host.http_services.append(HTTPService(
+            vsvc = HTTPService(
                 url=url, ip=ip, port=port, scheme=scheme, status=r["status"],
                 title=r["title"], content_length=r["len"],
-            ))
+            )
+            # fingerprint the vhost response so identical sites (e.g. many domains
+            # on one CDN IP returning the same parked/default page) collapse to a
+            # single content-discovery target instead of one per hostname.
+            from .techdetect import response_fingerprint
+            vsvc.fingerprint = response_fingerprint(vsvc)
+            host.http_services.append(vsvc)
             findings.append(Finding(
                 title=f"Virtual host serves a distinct application: {name}",
                 asset=f"{ip}:{port}",
