@@ -406,6 +406,13 @@ class ReportGenerator:
 
     def _assessment_gaps(self) -> str:
         gaps = []
+        # A failed stage is a real gap: its checks did not run. Surface it loudly
+        # rather than letting the report imply full coverage.
+        stage_errors = (self.graph.meta or {}).get("stage_errors") or {}
+        for label, err in stage_errors.items():
+            gaps.append(f"- **Stage failed — did not complete:** {label} ({err}). "
+                        "Findings from this stage are missing; re-run or "
+                        "investigate.")
         unresp = [h.ip for h in self.graph.hosts.values()
                   if h.status in (HostStatus.UNRESPONSIVE, HostStatus.FILTERED)]
         if unresp:

@@ -54,6 +54,14 @@ class Progress:
         extra = f" ({why})" if why else ""
         self._w(f"[{index}/{self.total}] {label} ... SKIPPED{extra}\n")
 
+    def stage_failed(self, index: int, label: str, error: str = "") -> None:
+        """Mark a stage FAILED so a crash is reported, never silently swallowed."""
+        if not self.enabled:
+            return
+        self._close_line()
+        extra = f": {error}" if error else ""
+        self._w(f"[{index}/{self.total}] {label} ... FAILED{extra}\n")
+
     # -- per-item counter (thread-safe) ----------------------------------- #
     def items(self, done: int, total: int, unit: str = "items") -> None:
         """Render an in-place 'done/total - remaining' counter for one stage."""

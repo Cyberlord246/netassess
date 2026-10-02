@@ -36,6 +36,11 @@ from .vhost import VhostProber
 from .vuln import VulnAssessmentEngine
 
 
+def _tag(label: str) -> str:
+    """Short log tag from a stage label, e.g. 'Host discovery' -> 'host'."""
+    return label.split()[0].lower().rstrip(":")
+
+
 class AssessmentEngine:
     def __init__(self, config: Config, log=None):
         self.config = config
@@ -56,6 +61,10 @@ class AssessmentEngine:
         self.udp = UDPScanner(config, self.scope) if config.udp_scan else None
         self.vhost = VhostProber(config, self.scope) if config.vhost_probe else None
         self.nuclei = self._build_nuclei(config)
+        from .defaultlogin import DefaultLoginChecker
+        from .endpoints import EndpointAnalyzer
+        self.deflogin = DefaultLoginChecker(config, self.scope)
+        self.endpoints = EndpointAnalyzer(config, self.scope)
         self.orch = Orchestrator(config)
         self._log = log or (lambda *a, **k: None)
         self.progress = Progress(enabled=getattr(config, "show_progress", True))
@@ -105,33 +114,62 @@ class AssessmentEngine:
             return self.graph
 
         hosts = self.scope.expand_hosts()
-        self._log(f"[scope] {len(hosts)} in-scope host(s) authorized")
+        self._log(f"[scope] {len(hosts)} in-scope host(s) authorized: "
+                  + ", ".join(hosts[:12])
+                  + (f" (+{len(hosts) - 12} more)" if len(hosts) > 12 else ""))
 
-        # Ordered plan. Only enabled stages are listed/run, so the [k/N] counts
-        # and the plan the operator sees reflect what will actually happen.
+        # Ordered plan. Each entry: (label, fn, enabled, summary_fn, skip_reason).
+        # Disabled stages are not run, but their skip reason is reported up front
+        # so the operator always knows *why* a stage did not execute.
         stages = [
-            ("Host discovery",             lambda: self._phase_discovery(hosts), True,  self._sum_discovery),
-            ("Reverse DNS",                self._phase_rdns,        True,                self._sum_rdns),
-            ("Port scan",                  self._phase_portscan,    True,                self._sum_ports),
-            ("Service identification",     self._phase_service_id,  True,                self._sum_services),
-            ("Service & protocol probes",  self._phase_probe,       True,                self._sum_http),
-            ("Virtual-host discovery",     self._phase_vhost,       self.vhost is not None,   self._sum_vhost),
-            ("Web content discovery",      self._phase_content,     self.content is not None, self._sum_content),
-            ("Nuclei templates",           self._phase_nuclei,      self.nuclei is not None,  None),
-            ("UDP scan",                   self._phase_udp,         self.udp is not None,     self._sum_udp),
-            ("Domain collection",          self._phase_domains,     True,                self._sum_domains),
-            ("Vulnerability heuristics",   self._phase_vuln,        True,                None),
-            ("CVE correlation",            self._phase_cve,         self.cve is not None, self._sum_cve),
-            ("Validation & assessment",    self._phase_validate,    getattr(self.config, "validate", True), None),
-            ("Role & anomaly analysis",    self._phase_roles,       True,                self._sum_roles),
+            ("Host discovery",            lambda: self._phase_discovery(hosts), True, self._sum_discovery, ""),
+            ("Reverse DNS",               self._phase_rdns,       True,  self._sum_rdns,     ""),
+            ("Port scan",                 self._phase_portscan,   True,  self._sum_ports,    ""),
+            ("Service identification",    self._phase_service_id, True,  self._sum_services, ""),
+            ("Service & protocol probes", self._phase_probe,      True,  self._sum_http,     ""),
+            ("Virtual-host discovery",    self._phase_vhost,      self.vhost is not None,   self._sum_vhost,
+             "disabled (--no-vhosts)"),
+            ("Default-login exposure",    self._phase_default_login, True, self._sum_deflogin, ""),
+            ("Web content discovery",     self._phase_content,    self.content is not None, self._sum_content,
+             "not requested (enable with --content-discovery)"),
+            ("Endpoint/JS analysis",      self._phase_endpoints,  True,  self._sum_endpoints, ""),
+            ("Nuclei templates",          self._phase_nuclei,     self.nuclei is not None,  None,
+             "not requested (enable with --nuclei)"),
+            ("UDP scan",                  self._phase_udp,        self.udp is not None,     self._sum_udp,
+             "not requested (enable with --udp)"),
+            ("Domain collection",         self._phase_domains,    True,  self._sum_domains,  ""),
+            ("Vulnerability heuristics",  self._phase_vuln,       True,  None,               ""),
+            ("CVE correlation",           self._phase_cve,        self.cve is not None,     self._sum_cve,
+             "disabled (--no-cve)"),
+            ("Validation & assessment",   self._phase_validate,   getattr(self.config, "validate", True), None,
+             "disabled (--no-validate)"),
+            ("Role & anomaly analysis",   self._phase_roles,      True,  self._sum_roles,    ""),
         ]
-        active = [(label, fn, summ) for label, fn, enabled, summ in stages if enabled]
+        active = [(label, fn, summ) for label, fn, enabled, summ, _ in stages if enabled]
+        disabled = [(label, why) for label, _, enabled, _, why in stages if not enabled]
         self.progress.set_plan([label for label, _, _ in active])
+        if disabled:
+            self._log("[plan] stages not running this scan:")
+            for label, why in disabled:
+                self._log(f"[plan]   - {label}: {why or 'disabled'}")
 
+        self._log(f"[plan] state saved after each stage -> "
+                  f"{os.path.join(self.config.output_dir, self.config.state_file)}")
+        self.graph.meta["stage_errors"] = {}
         for i, (label, fn, summ) in enumerate(active, 1):
             self.progress.reset_counter()
             self.progress.stage_start(i, label)
-            fn()
+            try:
+                fn()
+            except Exception as exc:
+                # Surface the failure instead of pretending the stage completed.
+                # Independent stages still run (the pipeline continues).
+                err = f"{type(exc).__name__}: {exc}"
+                self._log(f"[{_tag(label)}] ERROR — stage failed: {err}")
+                self.graph.meta["stage_errors"][label] = err
+                self.progress.stage_failed(i, label, err)
+                self._save()
+                continue
             summary = ""
             if summ is not None:
                 try:
@@ -140,11 +178,40 @@ class AssessmentEngine:
                     summary = ""
             self.progress.stage_done(i, label, summary)
             self._save()
+        errs = self.graph.meta.get("stage_errors") or {}
+        if errs:
+            self._log(f"[plan] completed with {len(errs)} failed stage(s): "
+                      + ", ".join(errs))
         return self.graph
+
+    # -- logging helpers -------------------------------------------------- #
+    def _tool(self, stage: str, tool: str, *, module: str = "", cmd: str = "",
+              out: str = "") -> None:
+        """Log which tool/module (and exact command) a stage used, so the run is
+        auditable: every active stage states its engine and, for shelled tools,
+        the full command line."""
+        parts = [f"tool={tool}"]
+        if module:
+            parts.append(f"module={module}")
+        if cmd:
+            parts.append(f"cmd='{cmd}'")
+        if out:
+            parts.append(f"out={out}")
+        self._log(f"[{stage}] " + "  ".join(parts))
 
     # -- stage summaries (short, shown on the DONE line) ------------------ #
     def _sum_discovery(self) -> str:
         return f"{len(self.graph.live_hosts())} live host(s)"
+
+    def _sum_deflogin(self) -> str:
+        n = sum(1 for _h, f in self.graph.all_findings()
+                if f.category == "default-login")
+        return f"{n} exposed default-login interface(s)"
+
+    def _sum_endpoints(self) -> str:
+        n = sum(len(getattr(s, "endpoints", []) or [])
+                for _h, s in self.graph.all_http_services())
+        return f"{n} endpoint(s)/JS reference(s) extracted"
 
     def _sum_rdns(self) -> str:
         n = sum(1 for h in self.graph.hosts.values() if h.hostnames)
@@ -204,6 +271,7 @@ class AssessmentEngine:
 
         remaining = ips
         if use_nmap:
+            self._tool("discovery", "nmap", cmd=f"nmap -sn -oX - ({len(ips)} host(s))")
             self._log(f"[discovery] nmap -sn host discovery on {len(ips)} host(s)…")
             up, res = self.nmap.discover(ips)
             if res.not_found:
@@ -219,6 +287,8 @@ class AssessmentEngine:
                 remaining = [] if mode == "nmap" else [ip for ip in ips if ip not in up]
 
         if remaining:
+            self._tool("discovery", "built-in",
+                       module="discovery.DiscoveryEngine (TCP connect)")
             self._log(f"[discovery] TCP-probing {len(remaining)} host(s)…")
             results = self.discovery.discover(remaining,
                                               progress=self._progress("discovery"))
@@ -260,6 +330,14 @@ class AssessmentEngine:
             tightened = sum(1 for t in sample if t < self.config.timeout)
             self._log(f"[ports] adaptive timeout active — {tightened}/{len(sample)} "
                       f"host(s) using a tighter-than-{self.config.timeout}s timeout")
+        if self.scanner.backend == "nmap":
+            intensity = 5 if self.config.service_detection == "deep" else 2
+            self._tool("ports", "nmap",
+                       cmd=f"nmap -sV --version-intensity {intensity} "
+                           f"-p {len(ports)}-ports ({len(targets)} host(s))")
+        else:
+            self._tool("ports", "built-in",
+                       module="ports.PortScanner (TCP connect + banner)")
         self._log(f"[ports] scanning {len(targets)} host(s) × {len(ports)} port(s) "
                   f"via {self.scanner.backend} (concurrent)…")
         results = self.scanner.scan_hosts(targets, ports,
@@ -318,13 +396,46 @@ class AssessmentEngine:
             if not confirmed:
                 self._run_probe_safe(self.generic, host, port)
 
+        self._tool("probe", "built-in probers",
+                   module="HTTP/TLS/SSH/SMTP/DNS/SMB/LDAP/DB (+httpx bulk HTTP)"
+                   if httpx_web is not None else
+                   "HTTP/TLS/SSH/SMTP/DNS/SMB/LDAP/DB")
         total = len(tasks)
         with ThreadPoolExecutor(max_workers=max(2, self.config.concurrency // 4)) as pool:
             futures = [pool.submit(run_task, t) for t in tasks]
             for _ in as_completed(futures):
                 self.progress.bump(total, "services tested")
+
+        # Per host:port visibility of what was identified as a web service.
+        for host, svc in self.graph.all_http_services():
+            self._log(f"[probe] web service: {svc.scheme}://{svc.ip}:{svc.port} "
+                      f"-> HTTP {svc.status or '?'} "
+                      f"{('[' + svc.title[:40] + ']') if svc.title else ''}")
+
+        self._ensure_tls_coverage()
         self._log(f"[probe] complete — {len(self.graph.all_http_services())} "
                   "HTTP service(s) analysed")
+
+    def _ensure_tls_coverage(self):
+        """Guarantee SSL/TLS analysis for EVERY https service, including https on
+        non-standard ports. The in-pass TLS probe already covers ports confirmed
+        https during probing; this catches any https service whose TLS metadata is
+        still missing (e.g. odd ports or an initial mis-identification)."""
+        tlsprobe = next((p for p in self.probes if p.name == "tls"), None)
+        if tlsprobe is None:
+            return
+        extra = 0
+        for host, svc in self.graph.all_http_services():
+            if svc.scheme != "https" or svc.tls is not None:
+                continue
+            port = host.ports.get(svc.port)
+            if port is None:
+                continue
+            self._run_probe_safe(tlsprobe, host, port)
+            extra += 1
+        if extra:
+            self._log(f"[tls] ran SSL/TLS analysis on {extra} additional https "
+                      "service(s) on non-standard/odd ports")
 
     def _httpx_active(self) -> bool:
         return self.httpx is not None and self.httpx.available()
@@ -430,6 +541,14 @@ class AssessmentEngine:
                       "falling back to built-in probe")
 
         backend = "feroxbuster" if use_ferox else "built-in"
+        if use_ferox:
+            wl = self.config.content_wordlist or _BUNDLED_WORDLIST
+            self._tool("content", "feroxbuster",
+                       cmd=f"feroxbuster -u <url> -w {os.path.basename(wl)} "
+                           f"-d {self.config.content_depth} (per service)")
+        else:
+            self._tool("content", "built-in",
+                       module="content_discovery.ContentDiscovery (GET-only)")
         web_list = ", ".join(sorted(f"{ip}:{port}" for ip, port in web_ports))
         self._log(f"[content] {len(services)} web service(s) qualify for content "
                   f"discovery: {web_list}")
@@ -510,6 +629,60 @@ class AssessmentEngine:
             self.progress.items(idx, total, "TLS services")
         self._log(f"[vhost] {added} distinct virtual host(s) discovered")
 
+    def _phase_default_login(self):
+        services = self.graph.all_http_services()
+        if not services:
+            self._log("[default-login] no HTTP service identified — nothing to check")
+            return
+        self._tool("default-login", "built-in",
+                   module="defaultlogin.DefaultLoginChecker (GET only, no creds sent)")
+        checked = 0
+        added = 0
+        total = len(services)
+        for idx, (host, svc) in enumerate(services, 1):
+            checked += 1
+            try:
+                for f in self.deflogin.check_service(host, svc):
+                    before = len(host.findings)
+                    host.add_finding(f)
+                    if len(host.findings) > before:
+                        added += 1
+                        self._log(f"[default-login] {svc.ip}:{svc.port} -> {f.title}")
+            except Exception as exc:
+                host.notes.append(f"default-login error on {svc.port}: {exc}")
+            self.progress.items(idx, total, "web services")
+        self._log(f"[default-login] checked {checked} service(s); {added} exposed "
+                  "default-login interface(s) flagged (NEEDS_VALIDATION)")
+
+    def _phase_endpoints(self):
+        services = self.graph.all_http_services()
+        if not services:
+            self._log("[endpoint/js] no HTTP service identified — nothing to analyse")
+            return
+        self._tool("endpoint/js", "built-in",
+                   module="endpoints.EndpointAnalyzer (root GET + parse)")
+        total = len(services)
+        total_eps = 0
+        added = 0
+        for idx, (host, svc) in enumerate(services, 1):
+            try:
+                eps = self.endpoints.analyze_service(host, svc)
+                total_eps += len(eps)
+                if eps:
+                    self._log(f"[endpoint/js] {svc.ip}:{svc.port} -> "
+                              f"{len(eps)} endpoint(s)/JS ref(s)")
+                f = self.endpoints.finding_for(svc, eps)
+                if f is not None:
+                    before = len(host.findings)
+                    host.add_finding(f)
+                    if len(host.findings) > before:
+                        added += 1
+            except Exception as exc:
+                host.notes.append(f"endpoint analysis error on {svc.port}: {exc}")
+            self.progress.items(idx, total, "web services")
+        self._log(f"[endpoint/js] {total_eps} endpoint(s)/JS reference(s) across "
+                  f"{total} service(s); {added} finding(s) added")
+
     def _phase_nuclei(self):
         if self.nuclei is None:
             return
@@ -526,6 +699,9 @@ class AssessmentEngine:
             self._log("[nuclei] no discovered web URLs to test")
             return
         profile = "thorough" if self.config.nuclei_thorough else "light"
+        self._tool("nuclei", "nuclei",
+                   cmd=f"nuclei -l <{len(urls)} urls> -rl {self.config.nuclei_rate} "
+                       f"-severity low,medium,high,critical ({profile} profile)")
         self._log(f"[nuclei] scanning {len(urls)} URL(s) ({profile} profile, "
                   f"rate {self.config.nuclei_rate}/s)…")
         findings, res = self.nuclei.scan(
@@ -652,6 +828,10 @@ class AssessmentEngine:
     def report(self) -> dict:
         rg = ReportGenerator(self.graph, self.scope, self.config)
         paths = rg.write(self.config.output_dir)
+        nf = sum(1 for _ in self.graph.all_findings())
+        self._log(f"[report] {nf} finding(s) written")
+        for kind, path in paths.items():
+            self._log(f"[report] {kind}: {path}")
         return paths
 
     # -- helpers ---------------------------------------------------------- #

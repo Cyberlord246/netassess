@@ -154,6 +154,7 @@ class HTTPService:
     response_ms: Optional[float] = None
     favicon_hash: str = ""
     discovered_paths: list[dict] = field(default_factory=list)
+    endpoints: list[str] = field(default_factory=list)   # links/JS/API refs extracted
 
     def to_dict(self) -> dict:
         d = asdict(self)

@@ -223,6 +223,43 @@ netassess diff --old baseline/state.json --new netassess-out/state.json --fail-o
 
 ---
 
+## Pipeline stages & logging
+
+Every scan runs these stages in order; each stage's output feeds the next. A
+stage runs only if enabled — disabled stages are reported up front with the
+reason they were skipped.
+
+```
+scope → live-host discovery → reverse DNS → port scan → service/version ID →
+HTTP/HTTPS probing (all open ports, not just 80/443) → SSL/TLS analysis (every
+https service, incl. non-standard ports) → technology detection → misconfig /
+exposure checks → virtual-host discovery → default-login exposure →
+content discovery → endpoint/JS analysis → nuclei → UDP → CVE correlation →
+KEV/EPSS → vulnerability validation → role/anomaly analysis → report
+```
+
+**Status logging.** For every stage the run prints:
+- the target(s) being processed, and per host the open ports found;
+- each HTTP service detected as `scheme://ip:port -> HTTP <status> [title]`;
+- the **tool and exact command** (`tool=nmap  cmd='nmap -sV …'`) or built-in
+  **module** used;
+- the output file/location (`state.json` after every stage; report paths at the
+  end) and the number of findings/results;
+- **why** a stage was skipped (e.g. `Nuclei templates: not requested`).
+
+**Failures are reported, never silent.** If a stage raises, it is marked
+`FAILED` with the error, recorded, and listed under **Assessment Gaps** in the
+report; independent stages still run so one failure doesn't abort the scan.
+
+Two always-on built-in stages (no flags needed):
+- **Default-login exposure** — only where a product with known default
+  credentials is *identified*, it GETs that product's login/admin path and flags
+  an exposed interface for manual verification. It **never submits credentials**
+  (no brute forcing); nuclei's `default-login` templates can test actively where
+  permitted.
+- **Endpoint/JS analysis** — parses each service's root document for links, JS
+  references and API-looking paths, highlighting sensitive-looking endpoints.
+
 ## External tools (optional accelerators; built-in fallbacks otherwise)
 
 | Tool | Speeds up / adds | Enable |
