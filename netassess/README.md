@@ -2,14 +2,28 @@
 
 A modular, explainable, **safe-by-default** network assessment agent. Given a
 list of IPs/CIDRs you are **explicitly authorized** to test, it builds a
-structured attack-surface inventory: live hosts → reverse DNS → open ports →
-services/versions → protocol probes → HTTP/TLS analysis → technology
-identification → safe vulnerability heuristics → CVE correlation → correlation →
-prioritization → a comprehensive report (Markdown + JSON + HTML).
+structured attack-surface inventory:
 
-It runs with **zero external dependencies** (Python 3.8+ stdlib only). If
-`nmap` is on the PATH it is used automatically for richer service/version
-detection; otherwise a pure-Python TCP connect scanner is used.
+```
+scope gate → live hosts + reverse DNS → port scan → service/version ID →
+protocol probes (HTTP/HTTPS on any open port, TLS, tech, misconfig) →
+virtual-host discovery → default-login exposure → content discovery* →
+endpoint/JS analysis → nuclei* / UDP* → vuln heuristics → CVE + KEV/EPSS →
+validation → role/anomaly analysis → report (MD / HTML / JSON)
+                                        └→ nextphase (phase-2 plan)
+```
+<sub>* opt-in (`--content-discovery`, `--nuclei`, `--udp`, or a profile)</sub>
+
+Each stage's output feeds the next, and every stage logs the tool/command or
+module it used, the hosts/ports/services it handled, its output location and
+result count. Disabled stages are listed up front with the reason; a stage that
+fails is marked `FAILED` and listed under **Assessment Gaps** rather than being
+silently treated as done.
+
+It runs with **zero external dependencies** (Python 3.8+ stdlib only).
+`nmap`, `httpx`, `feroxbuster`, and `nuclei` are used automatically **if on the
+PATH** for richer/faster results; otherwise pure-Python equivalents run (nuclei
+is simply skipped).
 
 > ⚠️ **Authorization is mandatory.** Only assess systems you own or have written
 > permission to test. The Scope Engine is a hard gate on every network
@@ -39,37 +53,45 @@ python -m netassess network scan --targets targets.txt --mode auto
 
 ## Usage
 
+The easiest way to run a good scan is a **profile** — a one-flag preset
+(`quick` / `standard` / `deep` / `web`). Any explicit flag still overrides it.
+
 ```bash
-# Full assessment from a file of IPs/CIDRs
-python -m netassess network scan --targets targets.txt
+# Profiles
+python -m netassess scan --targets targets.txt --profile quick    # ~40 ports, fast triage
+python -m netassess scan --targets targets.txt --profile standard # balanced default
+python -m netassess scan --targets targets.txt --profile deep     # deep + content + nuclei
+python -m netassess scan --targets targets.txt --profile web      # web ports + content + nuclei
+python -m netassess scan --targets targets.txt --profile deep --no-nuclei   # deep, skip nuclei
 
-# Inline targets, deeper (still safe) probing, custom ports
-python -m netassess network scan --targets 192.0.2.10,192.0.2.20 \
-    --ports 1-1024 --deep --output ./out
+# Full assessment from a file of IPs/CIDRs (defaults)
+python -m netassess scan --targets targets.txt
 
-# Full TCP range, tuned performance
-python -m netassess network scan --targets targets.txt \
+# Already scanned with nmap? skip discovery and scan only the known ports
+python -m netassess scan --targets targets.txt --skip-discovery --ports 22,80,443,8080
+
+# Force the httpx HTTP backend; full TCP range; tuned performance
+python -m netassess scan --targets targets.txt --http-tool httpx \
     --full-port-scan --concurrency 100 --rate 300 --timeout 2
 
 # AI-assisted task ordering (needs ANTHROPIC_API_KEY; falls back safely)
-python -m netassess network scan --targets targets.txt \
-    --mode ai --ai-provider anthropic
+python -m netassess scan --targets targets.txt --mode ai --ai-provider anthropic
 
 # CVE correlation: offline by default; add live NVD enrichment or a custom DB
-python -m netassess network scan --targets targets.txt --cve-online
-python -m netassess network scan --targets targets.txt --cve-db my-cves.json
-python -m netassess network scan --targets targets.txt --no-cve --no-html
+python -m netassess scan --targets targets.txt --cve-online
+python -m netassess scan --targets targets.txt --cve-db my-cves.json --no-html
 
 # Validate scope + test the authorization gate without touching the network
-python -m netassess scope check --targets 10.0.0.0/24 \
-    --exclude 10.0.0.1 --test 10.0.0.5,8.8.8.8
+python -m netassess scope check --targets 10.0.0.0/24 --exclude 10.0.0.1 --test 10.0.0.5
 
 # Regenerate a report from saved state
 python -m netassess report --state out/state.json
 
 # Diff two runs — what changed since last time? (great for re-tests / monitoring)
-python -m netassess diff --old baseline/state.json --new latest/state.json \
-    --output diff-out --fail-on worse
+python -m netassess diff --old baseline/state.json --new latest/state.json --fail-on worse
+
+# Continue testing: build a prioritized phase-2 plan from a finished scan
+python -m netassess nextphase --state out/state.json --output phase2
 ```
 
 ### Key options
@@ -77,6 +99,7 @@ python -m netassess diff --old baseline/state.json --new latest/state.json \
 | Flag | Meaning |
 |---|---|
 | `--targets` | file path, or comma list of IPs/CIDRs (required) |
+| `--profile` | preset bundle: `quick` · `standard` (default) · `deep` · `web`; explicit flags override |
 | `--exclude` | file/comma IPs/CIDRs to exclude (always wins) |
 | `--mode` | `deterministic` (default) · `ai` · `auto` |
 | `--discovery` | host discovery: `auto` (nmap `-sn` if available + TCP fallback), `nmap`, or `tcp` (built-in) |
@@ -84,18 +107,23 @@ python -m netassess diff --old baseline/state.json --new latest/state.json \
 | `--ports` | explicit set, e.g. `22,80,443` or `1-1024` (overrides the default) |
 | `--common-ports` | fast preset: 40 high-signal ports instead of top-1000 |
 | `--full-port-scan` | scan all 65,535 TCP ports |
-| `--udp` | also scan common UDP ports with protocol-aware SNMP/NTP/DNS probes |
-| `--udp-ports` | UDP ports to scan, e.g. `53,123,161` (default: common set) |
-| `--vhosts` | probe TLS cert SAN/CN hostnames as virtual hosts on the same in-scope IP |
+| `--udp` / `--udp-ports` | also scan common UDP ports (SNMP/NTP/DNS probes); or an explicit set |
+| `--http-tool` | HTTP-probe backend: `auto` (httpx if installed, else built-in) · `httpx` · `builtin` |
+| `--no-vhosts` | disable virtual-host discovery (on by default: probes TLS SAN/CN names) |
 | `--deep` | deeper service detection (still non-destructive) |
 | `--concurrency` / `--rate` / `--timeout` / `--retries` | performance & safety limits |
 | `--content-discovery` | enumerate common web paths (admin/login/api/.env…) on HTTP services |
 | `--content-tool` | `auto` (feroxbuster if installed, else built-in), `feroxbuster`, or `builtin` |
-| `--content-quick` | use only the small curated list (~70 paths) instead of full SecLists |
+| `--content-quick` | use only the small curated list (~74 paths) instead of full SecLists |
 | `--content-depth` / `--content-extensions` / `--content-thorough` | feroxbuster tuning |
 | `--wordlist` | file of extra paths to append to the content-discovery list |
-| `--min-severity` | lowest severity shown in reports (default `medium`; low/info suppressed) |
-| `--all-findings` | include every finding (same as `--min-severity info`) |
+| `--nuclei` / `--nuclei-thorough` / `--nuclei-rate` | run nuclei (if installed) and tune it |
+| `--no-nuclei` | force nuclei off even if a profile enabled it |
+| `--no-smtp-relay-test` | disable the SMTP open-relay test (on by default; non-destructive) |
+| `--no-validate` | disable the (non-destructive) validation layer |
+| `--auth-config` | JSON of per-host key-based SSH creds for opt-in credentialed validation (read-only) |
+| `--min-severity` | lowest severity shown in reports (default `info` — all shown) |
+| `--all-findings` / `--include-noise` | include every finding / also show low-signal findings hidden by default |
 | `--no-aggregate` | list findings per host instead of grouping across hosts |
 | `--cve-online` | enrich CVE findings via NVD (network, opt-in) |
 | `--cve-db` | merge an extra CVE JSON file into the built-in KB |
@@ -133,31 +161,38 @@ python -m netassess network scan --targets targets.txt --ports 80,443,8080,8443
 ## Architecture
 
 ```
-Input → Scope Engine → Discovery → Asset Graph → Port Scanner →
-Service ID → Protocol Probers → HTTP/TLS Analysis → Technology Detection →
-Vulnerability Assessment → Correlation → Prioritization → Report
+Input → Scope Engine → Discovery → Asset Graph → Port Scanner → Service ID →
+Protocol Probers → HTTP/TLS Analysis → Technology Detection → Virtual-host →
+Default-login → Content Discovery → Endpoint/JS → Nuclei/UDP → Vuln + CVE/KEV →
+Validation → Role/Anomaly → Report  (→ nextphase)
 ```
 
 | Module | Responsibility |
 |---|---|
 | `scope.py` | Mandatory authorization gate, rate/concurrency policy, decision log |
 | `config.py` | All tunables and policy |
+| `profiles.py` | One-flag scan presets (`--profile quick/standard/deep/web`) |
 | `state.py` | Persistent, queryable asset graph (JSON) |
 | `discovery.py` | TCP-based live-host discovery (ICMP-independent) |
 | `dns_recon.py` | Reverse DNS (PTR) — evidence only, not proof of ownership |
 | `ports.py` | Pure-Python scanner + optional Nmap backend |
-| `services.py` | Port+banner service identification |
+| `services.py` | Port+banner service identification; any-port HTTP heuristic |
 | `probers/` | `ServiceProbe` interface: HTTP, TLS, SSH, SMTP, DNS, SMB, LDAP, RDP, VNC, rsync, DB, Generic |
 | `techdetect.py` | HTTP technology fingerprinting with evidence/confidence |
+| `vhost.py` | TLS SAN/CN virtual-host discovery (on by default) |
+| `defaultlogin.py` | Default-login *exposure* checks for identified products (no creds sent) |
+| `content_discovery.py` | Web path enumeration (built-in; distinct-404 aware) |
+| `endpoints.py` | Endpoint/JS extraction (links, scripts, API paths) from web roots |
+| `webfetch.py` | Minimal bounded GET shared by the analysis stages |
 | `vuln/` | Safe, evidence-gated vulnerability heuristics + external-scanner hook |
-| `cve/` | Offline CVE knowledge base + version-range matching + optional NVD enrichment |
+| `cve/` | Offline CVE KB + version-range matching + NVD sync + CISA KEV/EPSS enrichment |
 | `report_html.py` | Self-contained HTML report (inline CSS, severity-colored cards) |
 | `diff.py` | Compare two `state.json` runs (new/closed ports, version changes, new/resolved findings) |
 | `correlation.py` | IP→host→port→service→version→tech→finding chains |
-| `prioritize.py` | Explainable, evidence-weighted risk scoring |
+| `prioritize.py` | Explainable, evidence-weighted risk scoring (drives `nextphase`) |
 | `report.py` | Markdown + JSON report generator |
 | `ai/` | Orchestrator: deterministic planner + optional LLM task-ranking |
-| `adapters/` | External-tool adapters (Nmap) returning structured data |
+| `adapters/` | External-tool adapters (nmap, httpx, feroxbuster, nuclei) returning structured data |
 
 ### Adding a probe
 
@@ -204,17 +239,19 @@ anonymous simple bind + RootDSE query that flags anonymous-bind exposure and
 all read-only (no credentials, no writes). Everything above is scope-gated and
 non-destructive.
 
-## Virtual-host discovery (`--vhosts`)
+## Virtual-host discovery (on by default; `--no-vhosts` to disable)
 
 One IP often serves several web apps, each answering only to the right `Host`
-header — an IP-only scan sees just the default one. With `--vhosts`, netassess
-takes the hostnames the server itself presents in its **TLS certificate** (SAN +
-CN, already collected during TLS probing) and re-requests the **same in-scope
+header — an IP-only scan sees just the default one. netassess takes the
+hostnames the server itself presents in its **TLS certificate** (SAN + CN,
+already collected during TLS probing) and re-requests the **same in-scope
 IP:port** with each as the `Host` header. Any that return a *different*
 application than the default response are reported as distinct virtual hosts.
+It runs by default; turn it off with `--no-vhosts`.
 
 ```bash
-python -m netassess network scan --targets targets.txt --vhosts
+python -m netassess scan --targets targets.txt              # vhost discovery on
+python -m netassess scan --targets targets.txt --no-vhosts  # off
 ```
 
 **Scope-safe by design:** it never scans a new IP and needs no external OSINT —
@@ -255,7 +292,7 @@ reachable web attack surface.
   [`data/common.txt`](data/common.txt). Bare paths are auto-graded by pattern
   (e.g. `.env`/`.git`/backups → high, `admin`/`api`/`login` → medium), and a
   curated list layers hand-tuned severities/wording on top.
-* **`--content-quick`** uses only the small curated list (~70 high-signal paths)
+* **`--content-quick`** uses only the small curated list (~74 high-signal paths)
   — much faster, ideal for a first pass or many hosts.
 * **`--wordlist FILE`** appends your own paths.
 
@@ -263,7 +300,7 @@ reachable web attack surface.
 # default: full SecLists common.txt (~4,700 paths), parallelized
 python -m netassess network scan --targets targets.txt --content-discovery
 
-# fast curated pass (~70 paths)
+# fast curated pass (~74 paths)
 python -m netassess network scan --targets targets.txt --content-discovery --content-quick
 
 # add custom paths on top of the default corpus
@@ -307,9 +344,10 @@ The feroxbuster integration is tuned for **signal over noise**:
 
 * `--auto-tune` — feroxbuster detects wildcard/soft-404 pages and dynamically
   adds size/word/line filters, so garbage hits are dropped automatically.
-* `--filter-status 404,400,500,501,502,503` — drops not-found and generic error
-  noise **while keeping useful non-200 codes** (200/301/302/**401**/**403**/405…),
-  which flag protected or existing resources — not just `200`s.
+* `--filter-status 400,500,501,502,503` — drops bad-request / server-error noise
+  **while keeping useful codes** (200/301/302/**401**/**403**/405 **and distinct
+  404s**). 404 is kept because a resource can exist yet answer 404; `--auto-tune`
+  collapses the generic not-found flood so only 404s that differ survive.
 * bounded `--depth` recursion into directories it actually finds.
 * `--dont-scan` state-changing paths (logout/delete/…) as a safety guard.
 * JSON output normalised into the same severity-graded `Finding` schema as the
