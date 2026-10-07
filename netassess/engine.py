@@ -366,13 +366,17 @@ class AssessmentEngine:
             return
 
         # Fast bulk HTTP fingerprint via httpx (if active): identifies + fingerprints
-        # all candidate web endpoints in one async pass, far faster than the built-in
-        # per-service GET. When it runs, the built-in HTTPProbe is dropped from the
-        # loop (httpx did the fetch); misconfig checks still run on confirmed services.
+        # candidate web endpoints in one async pass, far faster than the built-in
+        # per-service GET. httpx is best-effort — it can miss ports (timeouts, odd
+        # responses, result-matching gaps) — so we NEVER drop the built-in HTTP
+        # probe globally. Instead each task skips the built-in GET only for the
+        # exact (ip, port) httpx already confirmed; everything else still gets a
+        # built-in HTTP probe, so an open web port can never silently vanish.
         httpx_web = self._run_httpx_bulk() if self._httpx_active() else None
-        probes = self.probes
-        if httpx_web is not None:
-            probes = [p for p in self.probes if p.name != "http"]
+        httpx_web = httpx_web or set()
+        if self._httpx_active():
+            self._log(f"[probe] httpx confirmed {len(httpx_web)} web service(s); "
+                      "built-in HTTP probe will cover any it missed")
 
         self._log(f"[probe] running {len(tasks)} probe task(s) "
                   f"(mode={self.config.mode})…")
@@ -382,9 +386,11 @@ class AssessmentEngine:
             if host is None or task.port not in host.ports:
                 return
             port = host.ports[task.port]
-            # already confirmed as a web service by httpx -> no generic banner grab
-            confirmed = bool(httpx_web) and (host.ip, port.number) in httpx_web
-            for probe in probes:
+            done_by_httpx = (host.ip, port.number) in httpx_web
+            confirmed = done_by_httpx    # httpx already fetched this one
+            for probe in self.probes:
+                if probe.name == "http" and done_by_httpx:
+                    continue             # avoid a redundant second GET
                 if not probe.matches(port):
                     continue
                 # a probe "confirms" when it identifies the service without error;
@@ -398,7 +404,7 @@ class AssessmentEngine:
 
         self._tool("probe", "built-in probers",
                    module="HTTP/TLS/SSH/SMTP/DNS/SMB/LDAP/DB (+httpx bulk HTTP)"
-                   if httpx_web is not None else
+                   if self._httpx_active() else
                    "HTTP/TLS/SSH/SMTP/DNS/SMB/LDAP/DB")
         total = len(tasks)
         with ThreadPoolExecutor(max_workers=max(2, self.config.concurrency // 4)) as pool:
@@ -470,9 +476,8 @@ class AssessmentEngine:
         confirmed: set = set()
         added = 0
         for rec in records:
-            key = str(rec.get("input") or rec.get("host") or "")
-            hp = index.get(key)
-            if hp is None:                # try to recover ip:port from the url
+            hp = self._match_httpx_record(rec, index)
+            if hp is None:
                 continue
             host, port = hp
             svc = self.httpx.to_http_service(rec, host.ip, port.number)
@@ -490,6 +495,37 @@ class AssessmentEngine:
         self._log(f"[http] httpx confirmed {added} web service(s) of {len(index)} "
                   "candidate(s)")
         return confirmed
+
+    @staticmethod
+    def _match_httpx_record(rec: dict, index: dict):
+        """Map one httpx JSON record back to our (host, port) candidate.
+
+        httpx fields vary by version: 'input' echoes the target we fed, but older
+        builds omit it and only give 'url'/'host'/'port'. Try every signal so a
+        found service is never dropped over a field-naming mismatch."""
+        from urllib.parse import urlparse
+
+        def _hostport(u: str) -> str:
+            try:
+                p = urlparse(u if "://" in u else "//" + u)
+                if p.hostname and p.port:
+                    return f"{p.hostname}:{p.port}"
+            except ValueError:
+                pass
+            return ""
+
+        for cand in (str(rec.get("input") or ""),
+                     str(rec.get("url") or ""),
+                     _hostport(str(rec.get("url") or "")),
+                     _hostport(str(rec.get("input") or ""))):
+            if cand and cand in index:
+                return index[cand]
+        # last resort: host + explicit port fields
+        host = str(rec.get("host") or rec.get("ip") or "")
+        port = rec.get("port")
+        if host and port and f"{host}:{port}" in index:
+            return index[f"{host}:{port}"]
+        return None
 
     @staticmethod
     def _high_conf():
@@ -528,8 +564,20 @@ class AssessmentEngine:
                 skipped[proto] = skipped.get(proto, 0) + 1
 
         if not services:
-            self._log("[content] no HTTP/HTTPS service identified — content "
-                      "discovery is not applicable to the open ports found")
+            open_web = [(h.ip, p.number) for h in self.graph.hosts.values()
+                        for p in h.open_ports()
+                        if p.number in (80, 443, 8080, 8443, 8000, 8888, 8008,
+                                        8081, 3000, 5000, 9000, 9443)]
+            self._log("[content] no HTTP/HTTPS service CONFIRMED by the probe "
+                      "stage — content discovery runs only on ports that returned "
+                      "an HTTP response, not merely open ports")
+            if open_web:
+                shown = ", ".join(f"{ip}:{pt}" for ip, pt in open_web[:10])
+                self._log(f"[content] NOTE: {len(open_web)} open web-like port(s) "
+                          f"were NOT confirmed as HTTP ({shown}). Likely causes: "
+                          "probe timed out (raise --timeout), the service needs a "
+                          "vhost/Host header, it is not actually HTTP, or httpx "
+                          "missed it — retry with --http-tool builtin")
             if skipped:
                 self._log("[content] non-web ports assessed by protocol probes: "
                           + ", ".join(f"{k}×{v}" for k, v in sorted(skipped.items())))
