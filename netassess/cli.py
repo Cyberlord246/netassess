@@ -444,7 +444,33 @@ def cmd_report(args) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="netassess",
-        description="Authorized, safe network attack-surface assessment platform.")
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "Authorized, safe-by-default network attack-surface assessment "
+            "platform.\n\n"
+            "Pipeline: scope gate -> discovery + reverse DNS -> port scan -> "
+            "service/version ID -> protocol probes (HTTP on any port, TLS, "
+            "tech, misconfig) -> virtual-host -> default-login exposure -> "
+            "content discovery -> endpoint/JS -> nuclei/UDP -> vuln + CVE/KEV "
+            "-> validation -> roles -> report. Pure Python 3.8+ (stdlib only); "
+            "uses nmap/httpx/feroxbuster/nuclei automatically if installed."),
+        epilog=(
+            "examples:\n"
+            "  netassess scan --targets targets.txt --profile quick        "
+            "# fast triage (~40 ports)\n"
+            "  netassess scan --targets targets.txt --profile deep          "
+            "# deep + content + nuclei\n"
+            "  netassess scan --targets targets.txt --profile deep --no-nuclei\n"
+            "  netassess scan --targets t.txt --skip-discovery --ports 80,443,8080 "
+            "# reuse nmap's ports\n"
+            "  netassess cve sync && netassess kev sync                     "
+            "# offline CVE + exploit intel\n"
+            "  netassess diff --old a/state.json --new b/state.json --fail-on worse\n"
+            "  netassess nextphase --state netassess-out/state.json         "
+            "# build a phase-2 plan\n\n"
+            "Only assess systems you are explicitly authorized to test. "
+            "Full reference: USAGE.md"),
+    )
     sub = p.add_subparsers(dest="group", required=True)
 
     # network scan
