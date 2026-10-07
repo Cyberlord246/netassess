@@ -31,10 +31,13 @@ from .base import ToolAdapter
 from .process import ProcResult, run, which
 
 # status codes we consider useful signal (feroxbuster reports these; we filter
-# the rest). Not just 200 — protected/redirecting resources are informative.
-INTERESTING_STATUS = {200, 201, 204, 301, 302, 307, 308, 401, 403, 405, 500}
-# codes filtered out as noise
-_FILTER_STATUS = "404,400,500,501,502,503"
+# the rest). Not just 200 — protected/redirecting resources are informative, and
+# 404 is kept because a resource can exist yet answer 404 (custom handlers /
+# soft-404s). The flood of identical generic 404s is collapsed by --auto-tune
+# (wildcard/soft-404 similarity filtering), so only *distinct* 404s survive.
+INTERESTING_STATUS = {200, 201, 204, 301, 302, 307, 308, 401, 403, 404, 405}
+# hard-filtered as noise at the source (NOT 404 — see above)
+_FILTER_STATUS = "400,500,501,502,503"
 
 # safety: never brute-force into obviously state-changing endpoints
 _DONT_SCAN = r"logout|log-out|signout|sign-out|/delete|/remove|/destroy|/shutdown"

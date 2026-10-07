@@ -34,8 +34,28 @@ class _Handler(BaseHTTPRequestHandler):
         pass
 
 
-def _serve():
-    srv = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+class _Handler404(BaseHTTPRequestHandler):
+    """Everything returns 404, but /secret returns a DISTINCT (large) 404 body
+    while unknown paths return a short generic 404 — models a real resource that
+    answers 404."""
+    def do_GET(self):
+        if self.path.rstrip("/") == "/secret":
+            body = b"<title>Secret</title>" + b"Z" * 600
+        else:
+            body = b"nf"
+        self.send_response(404)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *a):
+        pass
+
+
+def _serve(handler=_Handler):
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     t = threading.Thread(target=srv.serve_forever, daemon=True)
     t.start()
     return srv, srv.server_address[1]
@@ -76,6 +96,26 @@ def test_content_discovery_reuses_connection_across_many_paths():
         cd.scan_service(host, svc)
         found = {d["path"] for d in svc.discovered_paths}
         assert found == {"/admin"}                     # only the real one
+    finally:
+        srv.shutdown()
+
+
+def test_distinct_404_kept_generic_404_dropped():
+    srv, port = _serve(_Handler404)
+    try:
+        cfg = Config(targets=["127.0.0.1/32"], timeout=2.0)
+        cd = ContentDiscovery(cfg, ScopeEngine(cfg))
+        cd.paths = [("secret", "common", Severity.LOW),
+                    ("nope", "common", Severity.LOW)]
+        host = Host(ip="127.0.0.1")
+        svc = HTTPService(url=f"http://127.0.0.1:{port}/", ip="127.0.0.1",
+                          port=port, scheme="http")
+        cd.scan_service(host, svc)
+        paths = {d["path"]: d for d in svc.discovered_paths}
+        # a 404 that DIFFERS from the generic not-found page is surfaced
+        assert "/secret" in paths and paths["/secret"]["status"] == 404
+        # the generic 404 (matches baseline length) is suppressed as noise
+        assert "/nope" not in paths
     finally:
         srv.shutdown()
 

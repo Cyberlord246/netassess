@@ -37,8 +37,11 @@ from .scope import ScopeEngine
 _TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.I | re.S)
 _MAX_BODY = 16384
 
-# Status codes that indicate a path is present/interesting.
-_PRESENT = {200, 201, 204, 301, 302, 307, 308, 401, 403, 405, 500}
+# Status codes that indicate a path is present/interesting. 404 is included
+# because a resource can exist yet answer 404 (custom handlers / soft-404s); the
+# generic not-found page is filtered out by comparing against a 404 baseline, so
+# only *distinct* 404s survive (see _baseline / the worker length check).
+_PRESENT = {200, 201, 204, 301, 302, 307, 308, 401, 403, 404, 405}
 
 # Curated path list. (path, category, base_severity_if_found)
 # Severities: secrets/backup = high, admin/api/debug = medium, info files = info.
@@ -326,23 +329,37 @@ class ContentDiscovery:
         return conn, None
 
     def _baseline(self, ip, port, scheme, host_header, sni=""):
-        """Detect soft-404: does the server answer 200 to nonsense paths?"""
+        """Calibrate the server's response to nonsense paths.
+
+        Returns (soft404_200, base_len, base_404_len):
+          * soft404_200  — server answers 200 to everything (soft-404);
+          * base_len     — typical length of that bogus-200 page;
+          * base_404_len — typical length of the server's generic 404 page, so a
+            *distinct* 404 (a real resource with a 404 status) can be told apart
+            from the sea of identical not-found pages.
+        """
         lengths = []
+        len_404 = []
         status_200 = False
         conn = None
-        for _ in range(2):
+        for _ in range(3):
             rnd = "".join(random.choices(string.ascii_lowercase, k=16))
             conn, r = self._request_on(conn, ip, port, scheme, host_header, rnd, sni)
-            if r and r[0] == 200:
+            if not r:
+                continue
+            if r[0] == 200:
                 status_200 = True
                 lengths.append(r[1])
+            elif r[0] == 404:
+                len_404.append(r[1])
         if conn:
             try:
                 conn.close()
             except OSError:
                 pass
         base_len = sum(lengths) / len(lengths) if lengths else 0
-        return status_200, base_len
+        base_404_len = sum(len_404) / len(len_404) if len_404 else 0
+        return status_200, base_len, base_404_len
 
     # -- per-service scan (pool of reused connections) ------------------- #
     def scan_service(self, host: Host, svc: HTTPService) -> list[Finding]:
@@ -358,7 +375,8 @@ class ContentDiscovery:
         # For HTTPS vhosts, also present the vhost as TLS SNI so SNI-strict
         # servers route to the right backend (still connecting to the IP).
         sni = vhost if (vhost and scheme == "https") else ""
-        soft404, base_len = self._baseline(ip, port, scheme, host_header, sni)
+        soft404, base_len, base_404_len = self._baseline(
+            ip, port, scheme, host_header, sni)
 
         q: "Queue" = Queue()
         for entry in self.paths:
@@ -384,6 +402,11 @@ class ContentDiscovery:
                 if status not in _PRESENT:
                     continue
                 if soft404 and status == 200 and abs(length - base_len) < 64:
+                    continue
+                # 404s are kept only when they differ from the server's generic
+                # not-found page (a real resource that answers 404), so the flood
+                # of identical 404s is suppressed while distinct ones surface.
+                if status == 404 and base_404_len and abs(length - base_404_len) < 64:
                     continue
                 title = ""
                 m = _TITLE_RE.search(body.decode("utf-8", "replace"))

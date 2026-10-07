@@ -110,7 +110,7 @@ The scan banner prints the active profile and exactly which options it enabled.
 ### Content discovery (opt-in)
 | Option | Meaning |
 |---|---|
-| `--content-discovery` | enumerate web paths (admin/login/api/.env…) on confirmed HTTP services — GET-only, scope-gated. |
+| `--content-discovery` | enumerate web paths (admin/login/api/.env…) on confirmed HTTP services — GET-only, scope-gated. Keeps 200/201/204, 301/302/307/308, 401/403, 405 **and distinct 404s** (a resource can exist yet answer 404); the generic not-found page is filtered against a 404 baseline so only 404s that differ surface. |
 | `--content-tool {auto,feroxbuster,builtin}` | engine (default `auto`): feroxbuster if installed, else built-in. |
 | `--content-quick` | use only the small curated path list (~74) instead of the bundled SecLists `common.txt` (~4,752). |
 | `--wordlist WORDLIST` | file of extra paths (one per line) to append to the active corpus. |

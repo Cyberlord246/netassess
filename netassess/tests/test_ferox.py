@@ -29,10 +29,13 @@ def test_argv_filters_noise_keeps_useful():
     a = FeroxbusterAdapter()
     argv = a.build_argv("https://t/", "wl.txt")
     fs = argv[argv.index("--filter-status") + 1]
-    assert "404" in fs and "502" in fs        # noise filtered
-    # useful non-200 codes are NOT filtered
-    for keep in (200, 301, 401, 403):
+    assert "502" in fs and "400" in fs        # server-error / bad-request noise filtered
+    # useful codes — including 404 — are NOT hard-filtered (404 kept: a resource
+    # can exist yet answer 404; --auto-tune collapses the generic ones)
+    for keep in (200, 301, 401, 403, 404):
         assert str(keep) not in fs.split(",")
+    from netassess.adapters.feroxbuster_adapter import INTERESTING_STATUS
+    assert 404 in INTERESTING_STATUS      # and surfaced by the parser
 
 
 def test_argv_extensions_and_thorough():
@@ -50,6 +53,7 @@ def test_parse_json_filters_and_extracts():
         '{"type":"response","url":"https://t/admin","status":301,"content_length":10}',
         '{"type":"response","url":"https://t/.env","status":200,"content_length":42}',
         '{"type":"response","url":"https://t/missing","status":404,"content_length":9}',
+        '{"type":"response","url":"https://t/boom","status":502,"content_length":9}',
         '{"type":"statistics","status_200s":1}',
         'not json',
     ])
@@ -57,7 +61,8 @@ def test_parse_json_filters_and_extracts():
     urls = {r["url"] for r in recs}
     assert "https://t/admin" in urls          # 301 kept (useful)
     assert "https://t/.env" in urls           # 200 kept
-    assert "https://t/missing" not in urls     # 404 filtered
+    assert "https://t/missing" in urls         # 404 KEPT (resource may exist; ferox auto-tune collapses generic 404s upstream)
+    assert "https://t/boom" not in urls        # 502 still dropped as noise
     assert all(r["status"] in INTERESTING_STATUS for r in recs)
 
 
