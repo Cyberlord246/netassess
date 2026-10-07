@@ -150,6 +150,7 @@ def _http_from_dict(d: dict) -> HTTPService:
         technologies=[_tech_from_dict(t) for t in d.get("technologies", [])],
         tls=tls, response_ms=d.get("response_ms"), favicon_hash=d.get("favicon_hash", ""),
         discovered_paths=d.get("discovered_paths", []),
+        endpoints=d.get("endpoints", []),
     )
 
 

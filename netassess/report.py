@@ -269,25 +269,61 @@ class ReportGenerator:
         return "\n".join(lines)
 
     def _content_section(self) -> str:
-        services = [(h, s) for h, s in self.graph.all_http_services()
-                    if s.discovered_paths]
-        if not services:
+        content_svcs = [(h, s) for h, s in self.graph.all_http_services()
+                        if s.discovered_paths]
+        endpoint_svcs = [(h, s) for h, s in self.graph.all_http_services()
+                         if getattr(s, "endpoints", None)]
+        if not content_svcs and not endpoint_svcs:
             return ""
-        lines = ["\n## Discovered Web Content (summary)\n",
-                 "Deduplicated, grouped results appear under **Findings** "
-                 "(HTTP 200 pages, redirect groups, access-controlled paths). "
-                 "This is a per-service count; the full path list is in "
-                 "`report.json`.\n",
-                 "| Service | Total | 200 | 3xx | 401/403 | Other |",
-                 "|---|---|---|---|---|---|"]
-        for _h, s in services:
-            paths = s.discovered_paths
-            n = len(paths)
-            c200 = sum(1 for p in paths if p["status"] == 200)
-            c3xx = sum(1 for p in paths if 300 <= p["status"] < 400)
-            cauth = sum(1 for p in paths if p["status"] in (401, 403))
-            other = n - c200 - c3xx - cauth
-            lines.append(f"| {s.url} | {n} | {c200} | {c3xx} | {cauth} | {other} |")
+
+        _CAP = 300          # max URLs listed per service (rest noted + in JSON)
+        lines = ["\n## Discovered Web Content\n"]
+
+        if content_svcs:
+            # per-service count overview first
+            lines += ["| Service | Total | 200 | 3xx | 401/403 | Other |",
+                      "|---|---|---|---|---|---|"]
+            for _h, s in content_svcs:
+                paths = s.discovered_paths
+                n = len(paths)
+                c200 = sum(1 for p in paths if p["status"] == 200)
+                c3xx = sum(1 for p in paths if 300 <= p["status"] < 400)
+                cauth = sum(1 for p in paths if p["status"] in (401, 403))
+                lines.append(f"| {s.url} | {n} | {c200} | {c3xx} | {cauth} "
+                             f"| {n - c200 - c3xx - cauth} |")
+
+            # then the actual discovered URLs, absolute, grouped by status
+            for _h, s in content_svcs:
+                lines.append(f"\n### {s.url}")
+                paths = sorted(s.discovered_paths,
+                               key=lambda p: (p.get("status", 0), p.get("path", "")))
+                shown = 0
+                for p in paths:
+                    if shown >= _CAP:
+                        lines.append(f"- _… +{len(paths) - _CAP} more "
+                                     "(full list in `report.json`)_")
+                        break
+                    url = p.get("url") or f"{s.url.rstrip('/')}/{p.get('path','').lstrip('/')}"
+                    st = p.get("status", "?")
+                    loc = p.get("location")
+                    extra = f" → {loc}" if (loc and 300 <= int(st or 0) < 400) else ""
+                    title = p.get("title")
+                    tnote = f"  _{title}_" if title else ""
+                    lines.append(f"- `{st}` {url}{extra}{tnote}")
+                    shown += 1
+
+        if endpoint_svcs:
+            lines.append("\n### Endpoints / JS references (from page analysis)")
+            for _h, s in endpoint_svcs:
+                base = s.url.rstrip("/")
+                eps = s.endpoints
+                lines.append(f"\n**{s.url}** — {len(eps)} reference(s):")
+                for ep in eps[:_CAP]:
+                    absu = ep if "://" in ep else f"{base}/{ep.lstrip('/')}"
+                    lines.append(f"- {absu}")
+                if len(eps) > _CAP:
+                    lines.append(f"- _… +{len(eps) - _CAP} more "
+                                 "(full list in `report.json`)_")
         return "\n".join(lines)
 
     def _tls_section(self) -> str:

@@ -44,6 +44,10 @@ th{background:rgba(127,127,127,.08);font-weight:600}tr:last-child td{border-bott
 .kv b{color:var(--fg)}
 .mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:13px}
 .note{background:rgba(127,127,127,.06);border:1px dashed var(--border);border-radius:8px;padding:10px 14px;color:var(--muted);font-size:13px}
+.urls{list-style:none;padding-left:0;line-height:1.7;font-size:13px}
+.urls li{word-break:break-all;margin:2px 0}
+.urls .mono{display:inline-block;min-width:2.6em;color:var(--muted)}
+.muted{color:var(--muted)}
 .chain{font-family:ui-monospace,Consolas,monospace;font-size:13px;margin:4px 0}
 footer{margin-top:50px;color:var(--muted);font-size:12px;text-align:center}
 """
@@ -275,27 +279,63 @@ class HTMLReport:
         return "".join(rows)
 
     def _content(self) -> str:
-        services = [(h, s) for h, s in self.graph.all_http_services()
-                    if s.discovered_paths]
-        if not services:
+        content_svcs = [(h, s) for h, s in self.graph.all_http_services()
+                        if s.discovered_paths]
+        endpoint_svcs = [(h, s) for h, s in self.graph.all_http_services()
+                         if getattr(s, "endpoints", None)]
+        if not content_svcs and not endpoint_svcs:
             return ""
-        out = ["<h2>Discovered Web Content (summary)</h2>",
-               "<p class='note'>Deduplicated, grouped results (200 pages, redirect "
-               "groups, access-controlled paths) appear under Findings. Per-service "
-               "counts below; full path list is in report.json.</p>",
-               "<table><tr><th>Service</th><th>Total</th><th>200</th><th>3xx</th>"
-               "<th>401/403</th><th>Other</th></tr>"]
-        for _h, s in services:
-            paths = s.discovered_paths
-            n = len(paths)
-            c200 = sum(1 for p in paths if p["status"] == 200)
-            c3xx = sum(1 for p in paths if 300 <= p["status"] < 400)
-            cauth = sum(1 for p in paths if p["status"] in (401, 403))
-            other = n - c200 - c3xx - cauth
-            out.append(f"<tr><td class='mono'>{_esc(s.url)}</td><td>{n}</td>"
-                       f"<td>{c200}</td><td>{c3xx}</td><td>{cauth}</td>"
-                       f"<td>{other}</td></tr>")
-        out.append("</table>")
+        _CAP = 300
+        out = ["<h2>Discovered Web Content</h2>"]
+
+        if content_svcs:
+            out += ["<table><tr><th>Service</th><th>Total</th><th>200</th>"
+                    "<th>3xx</th><th>401/403</th><th>Other</th></tr>"]
+            for _h, s in content_svcs:
+                paths = s.discovered_paths
+                n = len(paths)
+                c200 = sum(1 for p in paths if p["status"] == 200)
+                c3xx = sum(1 for p in paths if 300 <= p["status"] < 400)
+                cauth = sum(1 for p in paths if p["status"] in (401, 403))
+                out.append(f"<tr><td class='mono'>{_esc(s.url)}</td><td>{n}</td>"
+                           f"<td>{c200}</td><td>{c3xx}</td><td>{cauth}</td>"
+                           f"<td>{n - c200 - c3xx - cauth}</td></tr>")
+            out.append("</table>")
+
+            for _h, s in content_svcs:
+                out.append(f"<h3 class='mono'>{_esc(s.url)}</h3><ul class='urls'>")
+                paths = sorted(s.discovered_paths,
+                               key=lambda p: (p.get("status", 0), p.get("path", "")))
+                for p in paths[:_CAP]:
+                    url = p.get("url") or (s.url.rstrip('/') + "/"
+                                           + p.get("path", "").lstrip("/"))
+                    st = p.get("status", "?")
+                    loc = p.get("location")
+                    extra = (f" &rarr; {_esc(loc)}"
+                             if loc and 300 <= int(st or 0) < 400 else "")
+                    title = p.get("title")
+                    tnote = f" <em class='muted'>{_esc(title)}</em>" if title else ""
+                    out.append(f"<li><span class='mono'>{st}</span> "
+                               f"<a href='{_esc(url)}'>{_esc(url)}</a>"
+                               f"{extra}{tnote}</li>")
+                if len(paths) > _CAP:
+                    out.append(f"<li class='note'>… +{len(paths) - _CAP} more "
+                               "(full list in report.json)</li>")
+                out.append("</ul>")
+
+        if endpoint_svcs:
+            out.append("<h3>Endpoints / JS references (from page analysis)</h3>")
+            for _h, s in endpoint_svcs:
+                base = s.url.rstrip("/")
+                eps = s.endpoints
+                out.append(f"<p class='mono'>{_esc(s.url)} — {len(eps)} "
+                           "reference(s)</p><ul class='urls'>")
+                for ep in eps[:_CAP]:
+                    absu = ep if "://" in ep else f"{base}/{ep.lstrip('/')}"
+                    out.append(f"<li><a href='{_esc(absu)}'>{_esc(absu)}</a></li>")
+                if len(eps) > _CAP:
+                    out.append(f"<li class='note'>… +{len(eps) - _CAP} more</li>")
+                out.append("</ul>")
         return "".join(out)
 
     def _tls(self) -> str:
