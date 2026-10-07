@@ -134,6 +134,7 @@ The scan banner prints the active profile and exactly which options it enabled.
 | `--nuclei` | run nuclei (if installed) against discovered URLs with a light profile. |
 | `--nuclei-thorough` | broader nuclei template set (still excludes dos/fuzzing/intrusive/headless). |
 | `--nuclei-rate N` | nuclei requests/sec cap (default 30). |
+| `--no-nuclei` | force nuclei off even if a profile enabled it (e.g. `--profile deep --no-nuclei`). |
 | `--deep` | deeper (still safe) probes. |
 
 ### Reporting

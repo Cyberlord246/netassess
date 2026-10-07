@@ -48,6 +48,14 @@ def test_explicit_flag_overrides_profile():
     assert len(cfg.effective_ports()) == 1024
 
 
+def test_no_nuclei_overrides_profile():
+    _, cfg = _cfg(["scan", "--targets", "192.0.2.10", "--profile", "deep",
+                   "--no-nuclei"])
+    assert cfg.nuclei is False and cfg.nuclei_thorough is False
+    # deep's other stages are unaffected
+    assert cfg.content_discovery is True and cfg.deep is True
+
+
 def test_apply_profile_only_fills_unset():
     args = build_parser().parse_args(
         ["scan", "--targets", "192.0.2.10", "--content-discovery"])
