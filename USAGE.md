@@ -190,6 +190,23 @@ Tip: set `NVD_API_KEY` before `cve sync` for a much higher NVD rate limit. Both
 caches are offline — scans then correlate and flag actively-exploited CVEs
 without any target traffic.
 
+### `nextphase` — continue testing from a finished scan
+```bash
+netassess nextphase --state netassess-out/state.json --top 25 --output phase2
+```
+Reads a phase-1 `state.json`, ranks assets with the priority engine, and writes:
+- `phase2_targets.txt` — the highest-value hosts (already in authorized scope);
+- `phase2.json` — per-host ports, score and the reasons each was prioritized;
+
+then prints a ready-to-run deeper scan (`--skip-discovery --ports <known open
+ports> --profile deep`) and the matching `diff` command against the baseline.
+
+| Option | Meaning |
+|---|---|
+| `--state` | **required**. Phase-1 `state.json`. |
+| `--output DIR` | where to write the plan files (default: the state file's directory). |
+| `--top N` | number of top-prioritized assets to include (default 25). |
+
 ### `report`
 ```bash
 netassess report --state netassess-out/state.json --output some-dir

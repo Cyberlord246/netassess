@@ -344,6 +344,81 @@ def cmd_kev_sync(args) -> int:
     return 0 if (res["kev"] or res["epss"]) else 1
 
 
+def cmd_nextphase(args) -> int:
+    """Read a saved state.json and emit a prioritized phase-2 plan: a target
+    file of the highest-value hosts, their open ports, and a ready-to-run deeper
+    scan command. Scope is unchanged — these hosts were already authorized."""
+    import json
+    from collections import OrderedDict
+    from .prioritize import PriorityEngine
+
+    state_path = args.state
+    if not os.path.isfile(state_path):
+        print(f"error: state file not found: {state_path}", file=sys.stderr)
+        return 2
+    graph = AssetGraph.load(state_path)
+    items = PriorityEngine().prioritize(graph)
+    if not items:
+        print("no prioritized assets in state (nothing open was found).")
+        return 1
+    top = args.top or 25
+    items = items[:top]
+
+    hosts: "OrderedDict[str, dict]" = OrderedDict()
+    for it in items:
+        ip, _, port = it.asset.rpartition(":")
+        if not ip:
+            continue
+        try:
+            pnum = int(port)
+        except ValueError:
+            continue
+        h = hosts.setdefault(ip, {"ports": [], "score": 0.0, "reasons": []})
+        if pnum not in h["ports"]:
+            h["ports"].append(pnum)
+        h["score"] = max(h["score"], it.score)
+        for r in it.reasons:
+            if r not in h["reasons"]:
+                h["reasons"].append(r)
+
+    out_dir = args.output or (os.path.dirname(state_path) or ".")
+    os.makedirs(out_dir, exist_ok=True)
+    targets_file = os.path.join(out_dir, "phase2_targets.txt")
+    with open(targets_file, "w", encoding="utf-8") as fh:
+        for ip in hosts:
+            fh.write(ip + "\n")
+    union_ports = sorted({p for h in hosts.values() for p in h["ports"]})
+    ports_arg = ",".join(map(str, union_ports))
+    scan_out = os.path.join(out_dir, "phase2-out")
+
+    print(f"Phase-2 plan from {state_path} (top {len(items)} prioritized asset(s))")
+    print(f" hosts : {len(hosts)}")
+    print(f" ports : {ports_arg or '(none)'}")
+    print(f" wrote : {targets_file}")
+    print("")
+    print("ready-to-run (targeted, deeper pass — review scope first):")
+    print(f"  netassess scan --targets {targets_file} --skip-discovery "
+          f"--ports {ports_arg} --profile deep --output {scan_out}")
+    print("")
+    print("then diff against this baseline:")
+    print(f"  netassess diff --old {state_path} "
+          f"--new {os.path.join(scan_out, 'state.json')} --fail-on worse")
+    print("")
+    print("per-host priorities:")
+    for ip, h in hosts.items():
+        reasons = "; ".join(h["reasons"][:3])
+        print(f"  {ip}: ports {','.join(map(str, sorted(h['ports'])))}  "
+              f"(score {h['score']}; {reasons})")
+
+    jpath = os.path.join(out_dir, "phase2.json")
+    with open(jpath, "w", encoding="utf-8") as fh:
+        json.dump({ip: {"ports": sorted(h["ports"]), "score": h["score"],
+                        "reasons": h["reasons"]} for ip, h in hosts.items()},
+                  fh, indent=2)
+    print(f"\n json  : {jpath}")
+    return 0
+
+
 def cmd_report(args) -> int:
     state_path = args.state
     if not os.path.isfile(state_path):
@@ -424,6 +499,17 @@ def build_parser() -> argparse.ArgumentParser:
     rep.add_argument("--state", required=True, help="path to state.json")
     rep.add_argument("--output")
     rep.set_defaults(func=cmd_report)
+
+    # nextphase
+    nx = sub.add_parser("nextphase",
+                        help="from a saved state.json, emit a prioritized "
+                             "phase-2 target/port list + ready-to-run command")
+    nx.add_argument("--state", required=True, help="path to a phase-1 state.json")
+    nx.add_argument("--output", help="dir to write phase2_targets.txt / phase2.json "
+                                     "(default: the state file's directory)")
+    nx.add_argument("--top", type=int, default=25,
+                    help="how many top-prioritized assets to include (default 25)")
+    nx.set_defaults(func=cmd_nextphase)
     return p
 
 
