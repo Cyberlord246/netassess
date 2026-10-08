@@ -147,6 +147,10 @@ def _build_config(args) -> Config:
     if getattr(args, "no_nuclei", False):   # explicit off wins over --nuclei/profile
         cfg.nuclei = False
         cfg.nuclei_thorough = False
+    if getattr(args, "nmap_vuln", False):
+        cfg.nmap_vuln = True
+    if getattr(args, "nmap_vuln_script", None):
+        cfg.nmap_vuln_script = args.nmap_vuln_script
     if getattr(args, "content_discovery", False):
         cfg.content_discovery = True
     if getattr(args, "wordlist", None):
@@ -651,6 +655,14 @@ def _add_scan_args(sp: argparse.ArgumentParser):
     sp.add_argument("--no-nuclei", dest="no_nuclei", action="store_true",
                     help="force nuclei off even if a profile enabled it "
                          "(e.g. --profile deep --no-nuclei)")
+    sp.add_argument("--nmap-vuln", dest="nmap_vuln", action="store_true",
+                    help="run nmap NSE vuln scripts (if nmap installed) as an "
+                         "extra CVE source on discovered ports")
+    sp.add_argument("--nmap-vuln-script", dest="nmap_vuln_script",
+                    metavar="SCRIPT",
+                    help="NSE script/category for --nmap-vuln (default 'vulners'; "
+                         "'vulners' needs the script installed + internet, 'vuln' "
+                         "is bundled but broader/more active)")
     sp.add_argument("--deep", action="store_true", help="deeper (still safe) probes")
     sp.add_argument("--concurrency", type=int)
     sp.add_argument("--rate", type=float, help="max new connections/sec")

@@ -67,6 +67,7 @@ class AssessmentEngine:
         from .endpoints import EndpointAnalyzer
         self.deflogin = DefaultLoginChecker(config, self.scope)
         self.endpoints = EndpointAnalyzer(config, self.scope)
+        self.nmap_nse = self._build_nmap_nse(config)
         self.orch = Orchestrator(config)
         self._log = log or (lambda *a, **k: None)
         self.progress = Progress(enabled=getattr(config, "show_progress", True))
@@ -76,6 +77,12 @@ class AssessmentEngine:
             return None
         from .adapters.nuclei_adapter import NucleiAdapter
         return NucleiAdapter()
+
+    def _build_nmap_nse(self, config: Config):
+        if not getattr(config, "nmap_vuln", False):
+            return None
+        from .adapters.nmap_nse import NmapNSEAdapter
+        return NmapNSEAdapter()
 
     def _build_ferox(self, config: Config):
         if not config.content_discovery or config.content_tool == "builtin":
@@ -146,6 +153,8 @@ class AssessmentEngine:
             ("Vulnerability heuristics",  self._phase_vuln,       True,  None,               ""),
             ("CVE correlation",           self._phase_cve,        self.cve is not None,     self._sum_cve,
              "disabled (--no-cve)"),
+            ("Nmap NSE vuln scripts",     self._phase_nmap_vuln,  self.nmap_nse is not None, None,
+             "not requested (enable with --nmap-vuln)"),
             ("Validation & assessment",   self._phase_validate,   getattr(self.config, "validate", True), None,
              "disabled (--no-validate)"),
             ("Role & anomaly analysis",   self._phase_roles,      True,  self._sum_roles,    ""),
@@ -950,6 +959,51 @@ class AssessmentEngine:
         n = self.cve.assess(self.graph)
         self._log(f"[cve] {n} CVE lead(s) added (marked NEEDS_VALIDATION)")
         self._enrich_kev()
+
+    def _phase_nmap_vuln(self):
+        if self.nmap_nse is None:
+            return
+        if not self.nmap_nse.available():
+            self._log("[nmap-nse] requested but nmap not found on PATH — skipped")
+            return
+        import tempfile
+        targets = [h.ip for h in self.graph.hosts.values()
+                   if h.status in (HostStatus.LIVE, HostStatus.FILTERED)
+                   and h.open_ports() and self.scope.authorize(h.ip).allowed]
+        ports = sorted({p.number for h in self.graph.hosts.values()
+                        for p in h.open_ports()})
+        if not targets or not ports:
+            self._log("[nmap-nse] no in-scope hosts/ports to scan")
+            return
+        script = self.config.nmap_vuln_script
+        portspec = ",".join(map(str, ports))
+        self._tool("nmap-nse", "nmap",
+                   cmd=f"nmap -sV --script {script} -p {len(ports)}-ports "
+                       f"({len(targets)} host(s))")
+        tf = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False,
+                                         encoding="utf-8")
+        try:
+            tf.write("\n".join(targets))
+            tf.close()
+            findings, res = self.nmap_nse.scan(tf.name, portspec, script=script)
+        finally:
+            try:
+                os.unlink(tf.name)
+            except OSError:
+                pass
+        if res.not_found:
+            self._log("[nmap-nse] nmap vanished — skipped")
+            return
+        added = 0
+        for f in findings:
+            ip = f.asset.split(":", 1)[0]
+            host = self.graph.get(ip) or self.graph.get_or_create(ip)
+            before = len(host.findings)
+            host.add_finding(f)
+            if len(host.findings) > before:
+                added += 1
+        self._log(f"[nmap-nse] {added} CVE finding(s) added via '{script}' "
+                  "(deduped against the offline KB at the end)")
 
     def _phase_validate(self):
         if not getattr(self.config, "validate", True):

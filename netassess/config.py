@@ -112,6 +112,10 @@ class Config:
     # --- virtual-host probing ---------------------------------------------
     vhost_probe: bool = True            # probe TLS SAN/CN hostnames as vhosts (in-scope)
 
+    # --- nmap NSE vuln (opt-in additional CVE source) --------------------
+    nmap_vuln: bool = False            # run nmap NSE vuln scripts (if nmap present)
+    nmap_vuln_script: str = "vulners"  # NSE script/category to run
+
     # --- nuclei -----------------------------------------------------------
     nuclei: bool = False               # run nuclei against discovered URLs (if installed)
     nuclei_thorough: bool = False      # relax the light template filter
