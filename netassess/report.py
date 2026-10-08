@@ -19,6 +19,32 @@ from .prioritize import PriorityEngine
 from .scope import ScopeEngine
 from .state import AssetGraph
 
+# Media/static extensions excluded from the human report (images, css, fonts,
+# audio/video). JS/map are also treated as assets for discovered-paths, but kept
+# for endpoint/JS references (the JS refs are the point of that stage).
+_MEDIA_EXT = {
+    "png", "jpg", "jpeg", "gif", "bmp", "webp", "svg", "ico", "cur", "css",
+    "woff", "woff2", "ttf", "otf", "eot", "mp4", "m4v", "m4a", "mp3", "wav",
+    "ogg", "webm", "avi", "mov", "flv", "mpg", "mpeg", "swf",
+}
+
+
+def _ext_of(s: str) -> str:
+    last = (s or "").split("?", 1)[0].split("#", 1)[0].rstrip("/").rsplit("/", 1)[-1]
+    return last.rsplit(".", 1)[-1].lower() if "." in last else ""
+
+
+def _visible_paths(svc) -> list[dict]:
+    """Discovered content-discovery paths minus media/static assets (incl. js/css)."""
+    from .content_discovery import _is_static
+    return [p for p in (svc.discovered_paths or []) if not _is_static(p)]
+
+
+def _visible_endpoints(svc) -> list[str]:
+    """Endpoint/JS references minus pure media (images/css/fonts/av); keep .js."""
+    return [e for e in (getattr(svc, "endpoints", None) or [])
+            if _ext_of(e) not in _MEDIA_EXT]
+
 
 class ReportGenerator:
     def __init__(self, graph: AssetGraph, scope: ScopeEngine, config):
@@ -269,22 +295,24 @@ class ReportGenerator:
         return "\n".join(lines)
 
     def _content_section(self) -> str:
-        content_svcs = [(h, s) for h, s in self.graph.all_http_services()
-                        if s.discovered_paths]
-        endpoint_svcs = [(h, s) for h, s in self.graph.all_http_services()
-                         if getattr(s, "endpoints", None)]
+        # Media/static assets (images, css, fonts, audio/video, js) are excluded
+        # from the human report — they're noise. Raw data stays in report.json.
+        content_svcs = [(h, s, p) for h, s in self.graph.all_http_services()
+                        if (p := _visible_paths(s))]
+        endpoint_svcs = [(h, s, e) for h, s in self.graph.all_http_services()
+                         if (e := _visible_endpoints(s))]
         if not content_svcs and not endpoint_svcs:
             return ""
 
         _CAP = 300          # max URLs listed per service (rest noted + in JSON)
-        lines = ["\n## Discovered Web Content\n"]
+        lines = ["\n## Discovered Web Content\n",
+                 "_Media/static assets (images, css, fonts, audio/video) are "
+                 "excluded; full raw list is in `report.json`._\n"]
 
         if content_svcs:
-            # per-service count overview first
             lines += ["| Service | Total | 200 | 3xx | 401/403 | Other |",
                       "|---|---|---|---|---|---|"]
-            for _h, s in content_svcs:
-                paths = s.discovered_paths
+            for _h, s, paths in content_svcs:
                 n = len(paths)
                 c200 = sum(1 for p in paths if p["status"] == 200)
                 c3xx = sum(1 for p in paths if 300 <= p["status"] < 400)
@@ -292,17 +320,11 @@ class ReportGenerator:
                 lines.append(f"| {s.url} | {n} | {c200} | {c3xx} | {cauth} "
                              f"| {n - c200 - c3xx - cauth} |")
 
-            # then the actual discovered URLs, absolute, grouped by status
-            for _h, s in content_svcs:
+            for _h, s, paths in content_svcs:
                 lines.append(f"\n### {s.url}")
-                paths = sorted(s.discovered_paths,
+                paths = sorted(paths,
                                key=lambda p: (p.get("status", 0), p.get("path", "")))
-                shown = 0
-                for p in paths:
-                    if shown >= _CAP:
-                        lines.append(f"- _… +{len(paths) - _CAP} more "
-                                     "(full list in `report.json`)_")
-                        break
+                for p in paths[:_CAP]:
                     url = p.get("url") or f"{s.url.rstrip('/')}/{p.get('path','').lstrip('/')}"
                     st = p.get("status", "?")
                     loc = p.get("location")
@@ -310,13 +332,14 @@ class ReportGenerator:
                     title = p.get("title")
                     tnote = f"  _{title}_" if title else ""
                     lines.append(f"- `{st}` {url}{extra}{tnote}")
-                    shown += 1
+                if len(paths) > _CAP:
+                    lines.append(f"- _… +{len(paths) - _CAP} more "
+                                 "(full list in `report.json`)_")
 
         if endpoint_svcs:
             lines.append("\n### Endpoints / JS references (from page analysis)")
-            for _h, s in endpoint_svcs:
+            for _h, s, eps in endpoint_svcs:
                 base = s.url.rstrip("/")
-                eps = s.endpoints
                 lines.append(f"\n**{s.url}** — {len(eps)} reference(s):")
                 for ep in eps[:_CAP]:
                     absu = ep if "://" in ep else f"{base}/{ep.lstrip('/')}"

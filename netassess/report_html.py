@@ -279,20 +279,22 @@ class HTMLReport:
         return "".join(rows)
 
     def _content(self) -> str:
-        content_svcs = [(h, s) for h, s in self.graph.all_http_services()
-                        if s.discovered_paths]
-        endpoint_svcs = [(h, s) for h, s in self.graph.all_http_services()
-                         if getattr(s, "endpoints", None)]
+        from .report import _visible_paths, _visible_endpoints
+        content_svcs = [(h, s, p) for h, s in self.graph.all_http_services()
+                        if (p := _visible_paths(s))]
+        endpoint_svcs = [(h, s, e) for h, s in self.graph.all_http_services()
+                         if (e := _visible_endpoints(s))]
         if not content_svcs and not endpoint_svcs:
             return ""
         _CAP = 300
-        out = ["<h2>Discovered Web Content</h2>"]
+        out = ["<h2>Discovered Web Content</h2>",
+               "<p class='note'>Media/static assets (images, css, fonts, "
+               "audio/video) are excluded; raw list is in report.json.</p>"]
 
         if content_svcs:
             out += ["<table><tr><th>Service</th><th>Total</th><th>200</th>"
                     "<th>3xx</th><th>401/403</th><th>Other</th></tr>"]
-            for _h, s in content_svcs:
-                paths = s.discovered_paths
+            for _h, s, paths in content_svcs:
                 n = len(paths)
                 c200 = sum(1 for p in paths if p["status"] == 200)
                 c3xx = sum(1 for p in paths if 300 <= p["status"] < 400)
@@ -302,9 +304,9 @@ class HTMLReport:
                            f"<td>{n - c200 - c3xx - cauth}</td></tr>")
             out.append("</table>")
 
-            for _h, s in content_svcs:
+            for _h, s, paths in content_svcs:
                 out.append(f"<h3 class='mono'>{_esc(s.url)}</h3><ul class='urls'>")
-                paths = sorted(s.discovered_paths,
+                paths = sorted(paths,
                                key=lambda p: (p.get("status", 0), p.get("path", "")))
                 for p in paths[:_CAP]:
                     url = p.get("url") or (s.url.rstrip('/') + "/"
@@ -325,9 +327,8 @@ class HTMLReport:
 
         if endpoint_svcs:
             out.append("<h3>Endpoints / JS references (from page analysis)</h3>")
-            for _h, s in endpoint_svcs:
+            for _h, s, eps in endpoint_svcs:
                 base = s.url.rstrip("/")
-                eps = s.endpoints
                 out.append(f"<p class='mono'>{_esc(s.url)} — {len(eps)} "
                            "reference(s)</p><ul class='urls'>")
                 for ep in eps[:_CAP]:
