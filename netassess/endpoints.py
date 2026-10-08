@@ -54,7 +54,58 @@ class EndpointAnalyzer:
         svc.endpoints = eps
         # keep the root body around so a caller can scan it for secrets too
         self._last_root = (body, f"{svc.scheme}://{parsed.hostname or svc.ip}:{svc.port}/")
+        self._favicon(host, svc, host_header)
         return eps
+
+    def _favicon(self, host, svc, host_header) -> None:
+        """Fetch /favicon.ico (if any) and store the Shodan-style hash; add a
+        Technology when the hash is a known product."""
+        from .favicon import favicon_hash, identify
+        raw = self._raw_get(svc, host_header, "/favicon.ico")  # binary-safe GET
+        if not raw:
+            return
+        try:
+            h = favicon_hash(raw)
+        except Exception:
+            return
+        svc.favicon_hash = str(h)
+        prod = identify(h)
+        if prod:
+            from .models import Confidence, Technology
+            svc.technologies.append(Technology(
+                name=prod, category="app", confidence=Confidence.HIGH,
+                evidence=f"favicon hash {h}"))
+
+    def _raw_get(self, svc, host_header, path) -> bytes:
+        import http.client
+        import ssl
+        conn = None
+        try:
+            if svc.scheme == "https":
+                ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                conn = http.client.HTTPSConnection(svc.ip, svc.port,
+                                                   timeout=self.timeout, context=ctx)
+            else:
+                conn = http.client.HTTPConnection(svc.ip, svc.port,
+                                                  timeout=self.timeout)
+            headers = {"User-Agent": "netassess", "Connection": "close"}
+            if host_header:
+                headers["Host"] = host_header
+            conn.request("GET", path, headers=headers)
+            r = conn.getresponse()
+            if r.status != 200:
+                return b""
+            return r.read(200_000)
+        except Exception:
+            return b""
+        finally:
+            try:
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
 
     def scan_js_secrets(self, host, svc, *, max_files: int = 20,
                         max_bytes: int = 1_000_000) -> list:
