@@ -12,6 +12,7 @@ task is scope-checked again at execution time.
 from __future__ import annotations
 
 import os
+import re
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -182,11 +183,51 @@ class AssessmentEngine:
                     summary = ""
             self.progress.stage_done(i, label, summary)
             self._save()
+        self._dedupe_cve_findings()
+        self._save()
         errs = self.graph.meta.get("stage_errors") or {}
         if errs:
             self._log(f"[plan] completed with {len(errs)} failed stage(s): "
                       + ", ".join(errs))
         return self.graph
+
+    _CVE_RE = re.compile(r"CVE-\d{4}-\d{4,7}", re.I)
+
+    @staticmethod
+    def _finding_rank(f) -> tuple:
+        from .models import (CONFIDENCE_ORDER, SEVERITY_ORDER, ValidationState)
+        val = {ValidationState.CONFIRMED: 3,
+               ValidationState.NEEDS_VALIDATION: 1,
+               ValidationState.POTENTIAL: 1}.get(f.validation, 2)
+        return (val, 1 if getattr(f, "kev", False) else 0,
+                CONFIDENCE_ORDER[f.confidence], SEVERITY_ORDER[f.severity])
+
+    def _dedupe_cve_findings(self):
+        """Collapse findings that reference the SAME CVE on the SAME asset but
+        arrived from different sources (offline KB vs nuclei), keeping the
+        strongest (confirmed > lead, kev, higher confidence/severity)."""
+        removed = 0
+        for host in self.graph.hosts.values():
+            best: dict = {}
+            others: list = []
+            for f in host.findings:
+                m = self._CVE_RE.search(f.title or "")
+                if not m:
+                    others.append(f)
+                    continue
+                key = (m.group(0).upper(), f.asset)
+                cur = best.get(key)
+                if cur is None:
+                    best[key] = f
+                else:
+                    removed += 1
+                    if self._finding_rank(f) > self._finding_rank(cur):
+                        best[key] = f
+            if removed:
+                host.findings = others + list(best.values())
+        if removed:
+            self._log(f"[dedupe] merged {removed} duplicate CVE finding(s) "
+                      "across sources (same CVE id + asset)")
 
     # -- logging helpers -------------------------------------------------- #
     def _tool(self, stage: str, tool: str, *, module: str = "", cmd: str = "",
