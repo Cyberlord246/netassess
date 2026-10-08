@@ -89,6 +89,8 @@ The scan banner prints the active profile and exactly which options it enabled.
 | `--full-port-scan` | all 65535 TCP ports (slow — avoid at scale). |
 | `--discovery {auto,nmap,tcp}` | host discovery method. `auto` = nmap `-sn` if present + TCP fallback; `nmap` = nmap only; `tcp` = built-in. |
 | `--skip-discovery` | treat every in-scope host as live (skip host discovery). |
+| `--skip-portscan` | skip the connect-scan; assume `--ports` open and probe directly (without `--ports`, limits to common web ports). Great after an external nmap. |
+| `--nmap-import FILE` | import an nmap scan (`-oX` XML or `-oG` greppable): its open ports seed the run and its hosts join scope (implies `--skip-portscan`). `--targets` optional when given. |
 | `--udp` | also scan common UDP ports (DNS/SNMP/NTP/NetBIOS/…) with protocol probes. |
 | `--udp-ports UDP_PORTS` | UDP ports to scan, e.g. `53,123,161`. |
 
@@ -100,6 +102,8 @@ The scan banner prints the active profile and exactly which options it enabled.
 | `--timeout TIMEOUT` | per-connection timeout ceiling in seconds (default 3). |
 | `--retries N` | extra attempts on transient failure. |
 | `--no-adaptive-timeout` | use the full `--timeout` for every connection (disable RTT-based tightening). |
+| `--no-adaptive-rate` | disable rate backoff on resource-exhaustion errors (backoff only triggers on overload like "too many open files", never on filtered ports). |
+| `--resume` | continue a prior run: load `state.json` from the output dir and skip stages already completed. |
 
 ### HTTP / web
 | Option | Meaning |
@@ -122,6 +126,8 @@ The scan banner prints the active profile and exactly which options it enabled.
 | Option | Meaning |
 |---|---|
 | `--no-cve` | disable CVE correlation. |
+| `--nmap-vuln` | run nmap NSE vuln scripts (if nmap installed) as an extra CVE source on discovered ports; deduped against the offline KB. |
+| `--nmap-vuln-script SCRIPT` | NSE script/category for `--nmap-vuln` (default `vulners` — needs the script + internet; `vuln` is bundled but broader/more active). |
 | `--cve-online` | enrich CVE findings via NVD live during the scan (network, opt-in). |
 | `--cve-db CVE_DB` | extra CVE JSON to merge into the offline KB. |
 | `--no-validate` | disable the (non-destructive) validation layer. |
@@ -141,6 +147,8 @@ The scan banner prints the active profile and exactly which options it enabled.
 | Option | Meaning |
 |---|---|
 | `--no-html` | do not emit `report.html`. |
+| `--csv` | also write `report.csv` (flat findings table). |
+| `--sarif` | also write `report.sarif` (SARIF 2.1.0 for CI / code-scanning). |
 | `--min-severity {info,low,medium,high,critical}` | lowest severity shown in reports. |
 | `--all-findings` | include every finding (same as `--min-severity info`). |
 | `--no-aggregate` | list findings per host instead of grouping the same issue across hosts. |
@@ -277,6 +285,9 @@ Two always-on built-in stages (no flags needed):
   permitted.
 - **Endpoint/JS analysis** — parses each service's root document for links, JS
   references and API-looking paths, highlighting sensitive-looking endpoints.
+  It also **fetches the referenced JS and scans for leaked secrets** (AWS/Google/
+  GitHub/Slack/Stripe keys, private keys, JWTs — reported with redacted snippets)
+  and computes the **Shodan-style favicon hash** for app fingerprinting.
 
 ## External tools (optional accelerators; built-in fallbacks otherwise)
 
