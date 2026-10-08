@@ -183,6 +183,94 @@ class SSHProbe(ServiceProbe):
         return ProbeResult(data={"ssh": info}, findings=findings)
 
 
+def _mqtt_remaining_len(n: int) -> bytes:
+    out = bytearray()
+    while True:
+        d = n % 128
+        n //= 128
+        if n > 0:
+            d |= 0x80
+        out.append(d)
+        if n == 0:
+            return bytes(out)
+
+
+def mqtt_connect_packet(client_id: bytes = b"netassess") -> bytes:
+    """A minimal MQTT 3.1.1 CONNECT (clean session, no credentials)."""
+    var_header = b"\x00\x04MQTT\x04\x02" + struct.pack(">H", 60)
+    payload = struct.pack(">H", len(client_id)) + client_id
+    body = var_header + payload
+    return b"\x10" + _mqtt_remaining_len(len(body)) + body
+
+
+# MQTT 3.1.1 CONNACK return codes
+_MQTT_RC = {
+    0: "connection accepted (anonymous access allowed)",
+    1: "unacceptable protocol version",
+    2: "identifier rejected",
+    3: "server unavailable",
+    4: "bad username/password",
+    5: "not authorized",
+}
+
+
+class MQTTProbe(ServiceProbe):
+    name = "mqtt"
+
+    def matches(self, port: Port) -> bool:
+        return port.service.name in ("mqtt", "mqtts") or port.number in (1883, 8883)
+
+    def probe(self, host: Host, port: Port) -> ProbeResult:
+        ip, num = host.ip, port.number
+        use_tls = num == 8883 or port.service.name == "mqtts"
+        with self.scope.slot(ip, num) as s:
+            if not s.allowed:
+                return ProbeResult(error="scope denied")
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(self.config.timeout)
+            try:
+                sock.connect((ip, num))
+                if use_tls:
+                    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE
+                    sock = ctx.wrap_socket(sock, server_hostname=None)
+                sock.sendall(mqtt_connect_packet())
+                resp = sock.recv(16)
+            except (socket.timeout, OSError, ssl.SSLError) as exc:
+                return ProbeResult(error=str(exc))
+            finally:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+        # CONNACK = 0x20, remaining length 0x02, [session_present, return_code]
+        if len(resp) < 4 or (resp[0] & 0xF0) != 0x20:
+            return ProbeResult(error="not an MQTT broker")
+        rc = resp[3]
+        port.service.name = "mqtts" if use_tls else "mqtt"
+        port.service.product = "MQTT broker"
+        port.service.confidence = Confidence.HIGH
+        info = {"connack_rc": rc, "meaning": _MQTT_RC.get(rc, f"code {rc}")}
+        findings = []
+        if rc == 0:
+            findings.append(Finding(
+                title="MQTT broker allows anonymous connection",
+                asset=f"{ip}:{num}",
+                evidence=f"CONNECT with no credentials returned CONNACK rc=0 "
+                         f"({'TLS' if use_tls else 'plaintext'})",
+                description="The MQTT broker accepted an unauthenticated CONNECT.",
+                why_it_matters="Anyone reachable can subscribe to/publish on "
+                               "topics — often sensor data, commands, or PII.",
+                severity=Severity.HIGH, confidence=Confidence.HIGH,
+                impact="Unauthorised read/write of MQTT topics.",
+                remediation="Require authentication (username/password or mTLS) "
+                            "and ACLs; restrict network exposure.",
+                validation=ValidationState.CONFIRMED,
+                source="mqtt-probe", category="exposure"))
+        return ProbeResult(data={"mqtt": info}, findings=findings)
+
+
 class SMTPProbe(ServiceProbe):
     name = "smtp"
 

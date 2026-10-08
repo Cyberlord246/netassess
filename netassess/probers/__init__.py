@@ -14,14 +14,15 @@ from .tls_probe import TLSProbe
 from .ldap_probe import LDAPProbe
 from .remote_probes import RDPProbe, RsyncProbe, VNCProbe
 from .service_probes import (
-    DNSProbe, DatabaseProbe, FTPProbe, GenericProbe, IMAPProbe, POP3Probe,
-    SMBProbe, SMTPProbe, SSHProbe,
+    DNSProbe, DatabaseProbe, FTPProbe, GenericProbe, IMAPProbe, MQTTProbe,
+    POP3Probe, SMBProbe, SMTPProbe, SSHProbe,
 )
 
 # Order matters: specific probes first, generic last.
 SPECIFIC_PROBE_CLASSES = [
     HTTPProbe, TLSProbe, SSHProbe, SMTPProbe, FTPProbe, IMAPProbe, POP3Probe,
-    DNSProbe, SMBProbe, LDAPProbe, RDPProbe, VNCProbe, RsyncProbe, DatabaseProbe,
+    DNSProbe, SMBProbe, LDAPProbe, RDPProbe, VNCProbe, RsyncProbe, MQTTProbe,
+    DatabaseProbe,
 ]
 
 
@@ -37,5 +38,5 @@ __all__ = [
     "ProbeResult", "ServiceProbe", "build_probes", "build_generic",
     "HTTPProbe", "TLSProbe", "SSHProbe", "SMTPProbe", "DNSProbe", "SMBProbe",
     "LDAPProbe", "RDPProbe", "VNCProbe", "RsyncProbe", "FTPProbe", "IMAPProbe",
-    "POP3Probe", "DatabaseProbe", "GenericProbe",
+    "POP3Probe", "MQTTProbe", "DatabaseProbe", "GenericProbe",
 ]
