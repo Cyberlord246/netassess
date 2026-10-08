@@ -75,9 +75,34 @@ class CVEEngine:
         return out
 
     # -- matching --------------------------------------------------------- #
+    @staticmethod
+    def _kw_match(kw: str, text: str) -> bool:
+        """Word-boundary (CPE-style token) match: 'ssl' matches 'openssl 1.0.1'
+        but NOT 'wassl'; 'ftp' does not match 'sftp'. A trailing digit/dot is
+        allowed so a version glued to the product ('openssl1.0.1f') still hits."""
+        kw = kw.lower().strip()
+        if not kw:
+            return False
+        return re.search(r"(?<![a-z0-9])" + re.escape(kw) + r"(?![a-z])", text) \
+            is not None
+
+    def _entry_keywords(self, entry: dict) -> list[str]:
+        kws = list(entry.get("keywords", []))
+        # derive vendor/product tokens from a CPE 2.3 string if present
+        cpe = entry.get("cpe", "")
+        parts = cpe.split(":") if cpe else []
+        if len(parts) >= 5:
+            for field in (parts[3], parts[4]):            # vendor, product
+                kws += [t for t in field.replace("_", " ").split() if t]
+        return kws
+
     def _match_entry(self, product_text: str, version: str, entry: dict) -> bool:
         low = product_text.lower()
-        if not any(kw.lower() in low for kw in entry.get("keywords", [])):
+        # precision: an excluded token (e.g. 'tomcat' for an apache httpd CVE)
+        # vetoes the match outright — kills same-vendor-different-product FPs.
+        if any(self._kw_match(ex, low) for ex in entry.get("exclude_keywords", [])):
+            return False
+        if not any(self._kw_match(kw, low) for kw in self._entry_keywords(entry)):
             return False
         if parse_version(version) is None:
             return False

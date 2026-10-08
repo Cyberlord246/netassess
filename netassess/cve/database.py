@@ -29,7 +29,7 @@ import json
 CVE_DB: list[dict] = [
     {
         "id": "CVE-2021-41773", "product": "apache httpd",
-        "keywords": ["apache", "httpd"],
+        "keywords": ["apache", "httpd"], "exclude_keywords": ["tomcat"],
         "ranges": [{"introduced": "2.4.49", "fixed": "2.4.50"}],
         "cvss": 7.5, "severity": "high",
         "summary": "Apache HTTP Server 2.4.49 path traversal; can lead to RCE if "
@@ -38,7 +38,7 @@ CVE_DB: list[dict] = [
     },
     {
         "id": "CVE-2021-42013", "product": "apache httpd",
-        "keywords": ["apache", "httpd"],
+        "keywords": ["apache", "httpd"], "exclude_keywords": ["tomcat"],
         "ranges": [{"introduced": "2.4.49", "fixed": "2.4.51"}],
         "cvss": 9.8, "severity": "critical",
         "summary": "Apache HTTP Server 2.4.49/2.4.50 path traversal and RCE "

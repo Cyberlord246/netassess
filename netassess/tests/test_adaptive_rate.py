@@ -29,9 +29,12 @@ def test_repeated_penalize_bounded():
 def test_recovers_toward_full_over_time():
     b = TokenBucket(rate=1000.0)
     b.penalize()
-    b._recover_s = 0.0001              # make recovery effectively instant
-    time.sleep(0.01)
-    assert b._eff_rate(time.monotonic()) >= 999.0
+    # evaluate recovery deterministically: pass a time well past the window
+    b._recover_s = 1.0
+    assert b._eff_rate(b._penalized_at + 10.0) >= 999.0
+    # and mid-window it is partially recovered (between cut and full)
+    mid = b._eff_rate(b._penalized_at + 0.5)
+    assert 500.0 <= mid <= 1000.0
 
 
 def test_scope_note_overload_respects_flag():
