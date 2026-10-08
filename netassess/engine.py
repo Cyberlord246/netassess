@@ -48,7 +48,18 @@ class AssessmentEngine:
         self.imported_ports = imported_ports or {}   # {ip: [{port,service,product,version}]}
         self.scope = ScopeEngine(config)
         self.graph = AssetGraph()
-        self.graph.meta = {"mode": config.mode, "targets": config.targets}
+        # --resume: continue from a prior state.json in the output dir, skipping
+        # stages already completed (a crash mid-stage leaves it unmarked -> re-run).
+        if getattr(config, "resume", False):
+            prior = os.path.join(config.output_dir, config.state_file)
+            if os.path.isfile(prior):
+                try:
+                    self.graph = AssetGraph.load(prior)
+                except Exception:
+                    self.graph = AssetGraph()
+        self.graph.meta.setdefault("completed_stages", [])
+        self.graph.meta["mode"] = config.mode
+        self.graph.meta["targets"] = config.targets
         self.nmap = NmapAdapter()
         self.scanner = PortScanner(config, self.scope, self.nmap)
         self.discovery = DiscoveryEngine(config, self.scope)
@@ -169,8 +180,16 @@ class AssessmentEngine:
 
         self._log(f"[plan] state saved after each stage -> "
                   f"{os.path.join(self.config.output_dir, self.config.state_file)}")
+        resume = getattr(self.config, "resume", False)
+        completed = set(self.graph.meta.get("completed_stages", [])) if resume else set()
+        if completed:
+            self._log(f"[resume] {len(completed)} stage(s) already done — "
+                      f"skipping: {', '.join(sorted(completed))}")
         self.graph.meta["stage_errors"] = {}
         for i, (label, fn, summ) in enumerate(active, 1):
+            if label in completed:
+                self.progress.stage_skipped(i, label, "already done (--resume)")
+                continue
             self.progress.reset_counter()
             self.progress.stage_start(i, label)
             try:
@@ -191,6 +210,9 @@ class AssessmentEngine:
                 except Exception:
                     summary = ""
             self.progress.stage_done(i, label, summary)
+            cs = self.graph.meta.setdefault("completed_stages", [])
+            if label not in cs:
+                cs.append(label)
             self._save()
         self._dedupe_cve_findings()
         self._save()

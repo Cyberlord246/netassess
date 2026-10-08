@@ -134,6 +134,8 @@ def _build_config(args) -> Config:
         cfg.validate = False
     if getattr(args, "no_progress", False):
         cfg.show_progress = False
+    if getattr(args, "resume", False):
+        cfg.resume = True
     if getattr(args, "auth_config", None):
         cfg.auth_config = args.auth_config
         cfg.validation_credentialed = True
@@ -635,6 +637,9 @@ def _add_scan_args(sp: argparse.ArgumentParser):
                          "TLS SAN/CN hostnames via SNI+Host on the same in-scope IP)")
     sp.add_argument("--no-progress", dest="no_progress", action="store_true",
                     help="suppress the staged plan + live progress output")
+    sp.add_argument("--resume", action="store_true",
+                    help="continue a prior run: load state.json from the output "
+                         "dir and skip stages already completed")
     sp.add_argument("--no-validate", dest="no_validate", action="store_true",
                     help="disable the validation layer (it runs by default: safe, "
                          "non-destructive assessment of candidate findings)")
