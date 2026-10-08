@@ -105,6 +105,8 @@ def _build_config(args) -> Config:
         cfg.retries = args.retries
     if getattr(args, "no_adaptive_timeout", False):
         cfg.adaptive_timeout = False
+    if getattr(args, "no_adaptive_rate", False):
+        cfg.adaptive_rate = False
     if getattr(args, "discovery", None):
         cfg.discovery_mode = args.discovery
     if getattr(args, "skip_discovery", False):
@@ -677,6 +679,10 @@ def _add_scan_args(sp: argparse.ArgumentParser):
                     action="store_true",
                     help="disable RTT-based per-host timeouts; use the full "
                          "--timeout for every connection")
+    sp.add_argument("--no-adaptive-rate", dest="no_adaptive_rate",
+                    action="store_true",
+                    help="disable rate backoff on resource-exhaustion errors "
+                         "(it only triggers on overload, never on filtered ports)")
     sp.add_argument("--discovery", choices=["auto", "nmap", "tcp"],
                     help="host discovery: auto (nmap -sn if available + TCP "
                          "fallback), nmap (nmap -sn only), or tcp (built-in "

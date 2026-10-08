@@ -73,7 +73,17 @@ def parse_targets(raw: list[str]) -> tuple[list[Network], list[str]]:
 
 
 class TokenBucket:
-    """Thread-safe rate limiter (connections per second)."""
+    """Thread-safe rate limiter (connections per second).
+
+    Supports adaptive backoff: on a resource-exhaustion signal (``penalize``)
+    the effective rate is multiplied down, then recovers linearly back to the
+    configured rate over ``_recover_s`` seconds. This only triggers on real
+    overload (e.g. 'too many open files'), never on normal filtered ports, so it
+    protects big scans without penalising slow/firewalled hosts.
+    """
+
+    _MIN_MULT = 0.05
+    _recover_s = 15.0
 
     def __init__(self, rate: float, capacity: Optional[float] = None):
         self.rate = max(rate, 0.1)
@@ -81,19 +91,39 @@ class TokenBucket:
         self._tokens = self.capacity
         self._last = time.monotonic()
         self._lock = threading.Lock()
+        self._mult = 1.0
+        self._penalized_at = 0.0
+
+    def _eff_rate(self, now: float) -> float:
+        if self._mult >= 1.0:
+            return self.rate
+        # linear recovery toward 1.0 since the last penalty
+        frac = min(1.0, (now - self._penalized_at) / self._recover_s)
+        mult = min(1.0, self._mult + (1.0 - self._mult) * frac)
+        return self.rate * max(self._MIN_MULT, mult)
+
+    def penalize(self, factor: float = 0.5) -> None:
+        """Signal overload: cut the effective rate (bounded) and start recovery."""
+        with self._lock:
+            now = time.monotonic()
+            # bake in current recovery before applying a fresh cut
+            base = self._eff_rate(now) / self.rate
+            self._mult = max(self._MIN_MULT, base * factor)
+            self._penalized_at = now
 
     def acquire(self, tokens: float = 1.0) -> None:
         while True:
             with self._lock:
                 now = time.monotonic()
+                eff = self._eff_rate(now)
                 self._tokens = min(
-                    self.capacity, self._tokens + (now - self._last) * self.rate
+                    self.capacity, self._tokens + (now - self._last) * eff
                 )
                 self._last = now
                 if self._tokens >= tokens:
                     self._tokens -= tokens
                     return
-                needed = (tokens - self._tokens) / self.rate
+                needed = (tokens - self._tokens) / eff
             time.sleep(min(needed, 0.25))
 
 
@@ -110,6 +140,16 @@ class ScopeEngine:
         self._sem = threading.BoundedSemaphore(max(1, config.concurrency))
         self.decisions: list[ScopeDecision] = []
         self._log_lock = threading.Lock()
+        self._overloads = 0
+
+    def note_overload(self) -> None:
+        """Called by scanners/probers on a resource-exhaustion error (e.g. too
+        many open files). Backs off the rate limiter if adaptive rate is on."""
+        if not getattr(self.config, "adaptive_rate", True):
+            return
+        with self._log_lock:
+            self._overloads += 1
+        self._bucket.penalize()
 
     # -- introspection ---------------------------------------------------- #
     def expand_hosts(self, max_hosts: int = 65536) -> list[str]:

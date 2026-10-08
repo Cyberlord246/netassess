@@ -15,7 +15,16 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Optional
 
 from .config import Config
+import errno as _errno
+
 from .models import Confidence, Port, PortState, Service
+
+# OSErrno values that mean "we're outrunning local/remote resources", not a
+# filtered port — these trigger adaptive rate backoff.
+_RESOURCE_ERRNOS = {
+    _errno.EMFILE, _errno.ENFILE, _errno.ENOBUFS, _errno.ENOMEM,
+    _errno.EADDRNOTAVAIL, getattr(_errno, "EAGAIN", 11),
+}
 from .scope import ScopeEngine
 
 
@@ -62,7 +71,12 @@ class PurePythonScanner:
             return PortState.FILTERED, 0.0, ""
         except ConnectionRefusedError:
             return PortState.CLOSED, 0.0, ""
-        except OSError:
+        except OSError as exc:
+            # resource exhaustion (too many open files / buffers / ephemeral
+            # ports) means we're outrunning the machine — ask the rate limiter
+            # to back off. A normal firewall drop is socket.timeout, handled above.
+            if exc.errno in _RESOURCE_ERRNOS:
+                self.scope.note_overload()
             return PortState.FILTERED, 0.0, ""
         finally:
             try:

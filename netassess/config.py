@@ -61,6 +61,10 @@ class Config:
     adaptive_timeout: bool = True
     adaptive_factor: float = 10.0     # effective timeout = rtt * factor
     adaptive_floor: float = 0.3       # never go below this (s)
+    # adaptive rate: back the rate limiter off on resource-exhaustion errors
+    # (e.g. too many open files), then recover. Safe — never triggers on normal
+    # filtered/closed ports.
+    adaptive_rate: bool = True
 
     # --- discovery --------------------------------------------------------
     discovery_ports: list[int] = field(default_factory=lambda: [443, 80, 22, 445, 3389])
