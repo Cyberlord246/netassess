@@ -42,8 +42,9 @@ def _tag(label: str) -> str:
 
 
 class AssessmentEngine:
-    def __init__(self, config: Config, log=None):
+    def __init__(self, config: Config, log=None, imported_ports: dict | None = None):
         self.config = config
+        self.imported_ports = imported_ports or {}   # {ip: [{port,service,product,version}]}
         self.scope = ScopeEngine(config)
         self.graph = AssetGraph()
         self.graph.meta = {"mode": config.mode, "targets": config.targets}
@@ -117,6 +118,9 @@ class AssessmentEngine:
         self._log(f"[scope] {len(hosts)} in-scope host(s) authorized: "
                   + ", ".join(hosts[:12])
                   + (f" (+{len(hosts) - 12} more)" if len(hosts) > 12 else ""))
+
+        if self.imported_ports:
+            self._seed_imported()
 
         # Ordered plan. Each entry: (label, fn, enabled, summary_fn, skip_reason).
         # Disabled stages are not run, but their skip reason is reported up front
@@ -255,6 +259,35 @@ class AssessmentEngine:
         n = sum(1 for h in self.graph.hosts.values() if h.primary_role)
         return f"{n} host(s) classified"
 
+    def _seed_imported(self):
+        """Seed open ports from an imported nmap scan: mark those hosts LIVE and
+        their ports OPEN (with nmap's service/version), scope-gated. The port
+        scan then has nothing to do for them (skip_portscan is set by the CLI)."""
+        from .models import Confidence, HostStatus, Port, PortState, Service
+        seeded_hosts = 0
+        seeded_ports = 0
+        for ip, ports in self.imported_ports.items():
+            if not self.scope.authorize(ip).allowed:
+                self._log(f"[import] {ip} not in scope — skipped")
+                continue
+            host = self.graph.get_or_create(ip)
+            host.status = HostStatus.LIVE
+            host.discovery_method = "nmap import"
+            seeded_hosts += 1
+            for p in ports:
+                num = int(p["port"])
+                prod = " ".join(x for x in (p.get("product"), p.get("version")) if x)
+                host.ports[num] = Port(
+                    number=num, state=PortState.OPEN,
+                    service=Service(name=p.get("service") or "",
+                                    product=p.get("product") or "",
+                                    version=p.get("version") or "",
+                                    confidence=Confidence.MEDIUM,
+                                    evidence=f"nmap import: {prod}" if prod else "nmap import"))
+                seeded_ports += 1
+        self._log(f"[import] seeded {seeded_ports} open port(s) across "
+                  f"{seeded_hosts} host(s) from nmap import")
+
     # -- phases ----------------------------------------------------------- #
     def _phase_discovery(self, ips: list[str]):
         if self.config.skip_discovery:
@@ -319,6 +352,31 @@ class AssessmentEngine:
         if not targets:
             self._log("[ports] no live hosts to scan")
             return
+
+        # --skip-portscan: trust the given ports are open and probe them directly
+        # (great after an external nmap). No connect-scan is performed.
+        if self.config.skip_portscan:
+            from .models import Port, PortState, Service
+            from .services import PORT_HINTS
+            ports = self.config.effective_ports()
+            self._tool("ports", "none",
+                       module="--skip-portscan (ports assumed open, probed directly)")
+            seeded = 0
+            for ip in targets:
+                host = self.graph.get_or_create(ip)
+                for pn in ports:
+                    if pn not in host.ports:
+                        host.ports[pn] = Port(
+                            number=pn, state=PortState.OPEN,
+                            service=Service(name=PORT_HINTS.get(pn, "")))
+                        seeded += 1
+                self._log(f"[ports] {ip}: assuming {len(ports)} port(s) open "
+                          "(scan skipped)")
+            self._log(f"[ports] scan SKIPPED — {seeded} assumed-open port(s) "
+                      f"seeded across {len(targets)} host(s); closed ones fail "
+                      "gracefully during probing")
+            return
+
         ports = self.config.effective_ports()
         # per-host adaptive timeout from discovery RTT (fast hosts wait less)
         host_timeouts = {

@@ -29,6 +29,10 @@ PROBER_PORTS = {
 DEFAULT_PORTS = sorted(set(TOP_1000_TCP) | set(COMMON_40) | PROBER_PORTS)
 COMMON_PORTS = list(COMMON_40)
 
+# Safe default set when the port scan is SKIPPED and the operator gave no
+# explicit --ports — prevents assuming all ~1000 ports open on every host.
+WEB_PORTS = [80, 443, 8080, 8443, 8000, 8888, 8008, 8081, 3000, 5000, 9000, 9443]
+
 
 @dataclass
 class Config:
@@ -42,6 +46,7 @@ class Config:
     # --- port scanning ----------------------------------------------------
     ports: list[int] = field(default_factory=lambda: list(DEFAULT_PORTS))
     full_port_scan: bool = False      # 1-65535 when True
+    skip_portscan: bool = False       # assume `ports` open, probe directly (no scan)
     service_detection: str = "banner"  # off | banner | deep
 
     # --- performance / safety limits -------------------------------------

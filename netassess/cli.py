@@ -13,7 +13,7 @@ import argparse
 import os
 import sys
 
-from .config import Config, COMMON_PORTS, DEFAULT_PORTS
+from .config import Config, COMMON_PORTS, DEFAULT_PORTS, WEB_PORTS
 from .engine import AssessmentEngine
 from .report import ReportGenerator
 from .scope import ScopeEngine
@@ -84,8 +84,14 @@ def _build_config(args) -> Config:
         cfg.ports = ports
     elif getattr(args, "common_ports", False):  # fast 40-port preset
         cfg.ports = list(COMMON_PORTS)
+    elif getattr(args, "skip_portscan", False):
+        # skipping the scan assumes ports are open; without an explicit set,
+        # limit to common web ports so we don't assume ~1000 open on every host.
+        cfg.ports = list(WEB_PORTS)
     # else: keep the default (top-1000 TCP)
     cfg.full_port_scan = getattr(args, "full_port_scan", False)
+    if getattr(args, "skip_portscan", False):
+        cfg.skip_portscan = True
     cfg.deep = getattr(args, "deep", False)
     if cfg.deep:
         cfg.service_detection = "deep"
@@ -179,8 +185,43 @@ def _logger(verbose: bool):
 # --------------------------------------------------------------------------- #
 def cmd_scan(args) -> int:
     cfg = _build_config(args)
+
+    # Import an existing nmap scan: its hosts become scope targets and its open
+    # ports are seeded directly (implies --skip-portscan).
+    imported_ports = {}
+    if getattr(args, "nmap_import", None):
+        if not os.path.isfile(args.nmap_import):
+            print(f"error: nmap import file not found: {args.nmap_import}",
+                  file=sys.stderr)
+            return 2
+        from .nmap_import import parse as _parse_nmap
+        try:
+            imported_ports = _parse_nmap(args.nmap_import)
+        except Exception as exc:
+            print(f"error: could not parse nmap file: {exc}", file=sys.stderr)
+            return 2
+        if not imported_ports:
+            print(f"error: no open TCP ports found in {args.nmap_import}",
+                  file=sys.stderr)
+            return 2
+        # imported hosts join scope; skip the port scan for them
+        existing = set(cfg.targets)
+        for ip in imported_ports:
+            if ip not in existing:
+                cfg.targets.append(ip)
+        cfg.skip_portscan = True
+        # the imported ports ARE the port set — don't also assume the web-port
+        # default (prevents probing a dozen assumed-open ports per host)
+        if not _parse_ports(getattr(args, "ports", None)):
+            cfg.ports = sorted({p["port"] for ports in imported_ports.values()
+                                for p in ports})
+        print(f" import      : {args.nmap_import} -> "
+              f"{len(imported_ports)} host(s), "
+              f"{sum(len(v) for v in imported_ports.values())} open port(s)")
+
     if not cfg.targets:
-        print("error: no targets provided (--targets FILE|IP,IP,CIDR)", file=sys.stderr)
+        print("error: no targets provided (--targets FILE|IP,IP,CIDR or --nmap-import)",
+              file=sys.stderr)
         return 2
 
     print("=" * 60)
@@ -249,7 +290,8 @@ def cmd_scan(args) -> int:
         print(f" nuclei      : off")
     print("-" * 60)
 
-    engine = AssessmentEngine(cfg, log=_logger(True))
+    engine = AssessmentEngine(cfg, log=_logger(True),
+                              imported_ports=imported_ports)
     engine.run()
     paths = engine.report()
     print("-" * 60)
@@ -544,8 +586,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _add_scan_args(sp: argparse.ArgumentParser):
     from .profiles import profile_names, help_text, DEFAULT_PROFILE
-    sp.add_argument("--targets", required=True,
-                    help="file path, or comma-separated IPs/CIDRs")
+    sp.add_argument("--targets",
+                    help="file path, or comma-separated IPs/CIDRs "
+                         "(optional if --nmap-import is given)")
+    sp.add_argument("--nmap-import", dest="nmap_import", metavar="FILE",
+                    help="import an existing nmap scan (XML -oX or greppable -oG): "
+                         "its open ports seed the assessment and its hosts are "
+                         "added to scope; implies --skip-portscan for them")
+    sp.add_argument("--skip-portscan", dest="skip_portscan", action="store_true",
+                    help="skip the port scan; assume --ports are open and probe "
+                         "them directly (without --ports, limits to common web "
+                         "ports). Best after an external nmap scan")
     sp.add_argument("--profile", choices=profile_names(), default=DEFAULT_PROFILE,
                     metavar="{quick,standard,deep,web}", help=help_text())
     sp.add_argument("--exclude", help="file/comma IPs/CIDRs to exclude")
