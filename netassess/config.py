@@ -119,6 +119,8 @@ class Config:
 
     # --- report -----------------------------------------------------------
     html_report: bool = True          # also emit report.html
+    csv_report: bool = False          # also emit report.csv (findings table)
+    sarif_report: bool = False        # also emit report.sarif (SARIF 2.1.0, CI)
     report_min_severity: str = "info"  # show all severities (info+); raise with --min-severity
     report_aggregate: bool = True     # collapse same finding across hosts into one
     # low-signal finding titles hidden from the human report (still in report.json)

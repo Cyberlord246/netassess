@@ -163,6 +163,10 @@ def _build_config(args) -> Config:
         cfg.content_thorough = True
     if getattr(args, "no_html", False):
         cfg.html_report = False
+    if getattr(args, "csv", False):
+        cfg.csv_report = True
+    if getattr(args, "sarif", False):
+        cfg.sarif_report = True
     if getattr(args, "all_findings", False):
         cfg.report_min_severity = "info"
     elif getattr(args, "min_severity", None):
@@ -471,12 +475,15 @@ def cmd_report(args) -> int:
         return 2
     graph = AssetGraph.load(state_path)
     cfg = Config(targets=graph.meta.get("targets", []),
-                 output_dir=args.output or os.path.dirname(state_path) or ".")
+                 output_dir=args.output or os.path.dirname(state_path) or ".",
+                 csv_report=getattr(args, "csv", False),
+                 sarif_report=getattr(args, "sarif", False))
     scope = ScopeEngine(cfg)
     rg = ReportGenerator(graph, scope, cfg)
     paths = rg.write(cfg.output_dir)
-    print(f"report : {paths['markdown']}")
-    print(f"json   : {paths['json']}")
+    for kind in ("markdown", "json", "html", "csv", "sarif"):
+        if kind in paths:
+            print(f"{kind:8s}: {paths[kind]}")
     return 0
 
 
@@ -569,6 +576,8 @@ def build_parser() -> argparse.ArgumentParser:
     rep = sub.add_parser("report", help="regenerate a report from saved state")
     rep.add_argument("--state", required=True, help="path to state.json")
     rep.add_argument("--output")
+    rep.add_argument("--csv", action="store_true", help="also write report.csv")
+    rep.add_argument("--sarif", action="store_true", help="also write report.sarif")
     rep.set_defaults(func=cmd_report)
 
     # nextphase
@@ -694,6 +703,10 @@ def _add_scan_args(sp: argparse.ArgumentParser):
                     help="path to an extra CVE JSON file to merge into the KB")
     sp.add_argument("--no-html", dest="no_html", action="store_true",
                     help="do not emit report.html")
+    sp.add_argument("--csv", action="store_true",
+                    help="also write report.csv (flat findings table)")
+    sp.add_argument("--sarif", action="store_true",
+                    help="also write report.sarif (SARIF 2.1.0 for CI / code-scanning)")
     sp.add_argument("--min-severity", dest="min_severity",
                     choices=["info", "low", "medium", "high", "critical"],
                     help="lowest severity shown in reports (default: medium; "

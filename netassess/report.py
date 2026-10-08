@@ -66,6 +66,18 @@ class ReportGenerator:
         if getattr(self.config, "html_report", True):
             from .report_html import HTMLReport
             paths["html"] = HTMLReport(self.graph, self.scope, self.config).write(out_dir)
+        if getattr(self.config, "csv_report", False):
+            from .exporters import to_csv
+            p = os.path.join(out_dir, "report.csv")
+            with open(p, "w", encoding="utf-8", newline="") as fh:
+                fh.write(to_csv(self.graph))
+            paths["csv"] = p
+        if getattr(self.config, "sarif_report", False):
+            from .exporters import to_sarif
+            p = os.path.join(out_dir, "report.sarif")
+            with open(p, "w", encoding="utf-8") as fh:
+                fh.write(to_sarif(self.graph))
+            paths["sarif"] = p
         return paths
 
     # -- rendering -------------------------------------------------------- #
