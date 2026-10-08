@@ -712,6 +712,7 @@ class AssessmentEngine:
         total = len(services)
         total_eps = 0
         added = 0
+        secrets = 0
         for idx, (host, svc) in enumerate(services, 1):
             try:
                 eps = self.endpoints.analyze_service(host, svc)
@@ -725,11 +726,20 @@ class AssessmentEngine:
                     host.add_finding(f)
                     if len(host.findings) > before:
                         added += 1
+                # scan the root body + referenced JS files for leaked secrets
+                for sf in self.endpoints.scan_js_secrets(host, svc):
+                    before = len(host.findings)
+                    host.add_finding(sf)
+                    if len(host.findings) > before:
+                        secrets += 1
+                        self._log(f"[endpoint/js] {svc.ip}:{svc.port} -> SECRET: "
+                                  f"{sf.title}")
             except Exception as exc:
                 host.notes.append(f"endpoint analysis error on {svc.port}: {exc}")
             self.progress.items(idx, total, "web services")
         self._log(f"[endpoint/js] {total_eps} endpoint(s)/JS reference(s) across "
-                  f"{total} service(s); {added} finding(s) added")
+                  f"{total} service(s); {added} finding(s) added; "
+                  f"{secrets} secret finding(s)")
 
     def _phase_nuclei(self):
         if self.nuclei is None:

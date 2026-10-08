@@ -52,7 +52,39 @@ class EndpointAnalyzer:
             return []
         eps = self._extract(body, svc, parsed)
         svc.endpoints = eps
+        # keep the root body around so a caller can scan it for secrets too
+        self._last_root = (body, f"{svc.scheme}://{parsed.hostname or svc.ip}:{svc.port}/")
         return eps
+
+    def scan_js_secrets(self, host, svc, *, max_files: int = 20,
+                        max_bytes: int = 1_000_000) -> list:
+        """Fetch the service's referenced JS files (and reuse the root body) and
+        scan them for leaked secrets. Bounded + scope-gated; returns Findings."""
+        from .secrets import scan_text, findings_for
+        if not self.scope.authorize(svc.ip, svc.port).allowed:
+            return []
+        parsed = urlparse(svc.url)
+        host_header = parsed.hostname if (parsed.hostname and
+                                          parsed.hostname != svc.ip) else None
+        base = f"{svc.scheme}://{parsed.hostname or svc.ip}:{svc.port}"
+
+        hits: list[dict] = []
+        # 1) the root document we already fetched (inline script / config blobs)
+        root = getattr(self, "_last_root", None)
+        if root and root[1].startswith(base):
+            hits += scan_text(root[0], root[1])
+
+        # 2) the referenced .js files (bounded)
+        js_paths = [e for e in (svc.endpoints or [])
+                    if e.split("?", 1)[0].lower().endswith(".js")][:max_files]
+        for path in js_paths:
+            st, _h, body = fetch(svc.ip, svc.port, svc.scheme,
+                                 path if path.startswith("/") else "/" + path,
+                                 host_header=host_header, timeout=self.timeout,
+                                 max_bytes=max_bytes)
+            if body:
+                hits += scan_text(body, f"{base}{path if path.startswith('/') else '/' + path}")
+        return findings_for(f"{svc.ip}:{svc.port}", hits)
 
     def _extract(self, body: str, svc, parsed) -> list[str]:
         base = f"{svc.scheme}://{parsed.hostname or svc.ip}:{svc.port}/"
