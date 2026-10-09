@@ -10,23 +10,26 @@ a structured attack-surface inventory and a report:
 ```
 scope gate → live hosts + reverse DNS → port scan → service/version ID →
 protocol probes (HTTP/HTTPS on any open port, TLS, tech, misconfig) →
-virtual-host discovery → default-login exposure → content discovery* →
-endpoint/JS analysis → nuclei* / UDP* → vuln heuristics → CVE + KEV/EPSS →
-validation → role/anomaly analysis → report (MD / HTML / JSON)
+virtual-host discovery → technology fingerprint → default-login exposure →
+content discovery* (tech-aware extensions) → endpoint/JS + secret scan →
+nuclei* / UDP* → vuln heuristics → CVE + KEV/EPSS (+ nmap NSE*) →
+validation → role/anomaly analysis → report (MD / HTML / JSON / CSV* / SARIF*)
                                          └→ nextphase (phase-2 plan)
 ```
-<sub>* opt-in (`--content-discovery`, `--nuclei`, `--udp`, or a profile)</sub>
+<sub>* opt-in (`--content-discovery`, `--nuclei`, `--udp`, `--nmap-vuln`,
+`--csv`, `--sarif`, or a profile)</sub>
 
 Each stage's output feeds the next, and every stage logs the tool/command or
 module it used, the hosts/ports/services it handled, its output location and
 result count. Disabled stages are listed up front with the reason; a stage that
 fails is marked `FAILED` and listed under **Assessment Gaps** instead of being
-silently treated as done.
+silently treated as done. `--resume` continues a prior run, skipping completed
+stages.
 
 Runs on the **Python 3.8+ standard library alone** (no required dependencies).
-Uses `nmap`, `httpx`, `feroxbuster`, and `nuclei` automatically **if
-installed**, otherwise falls back to built-in pure-Python equivalents (nuclei is
-simply skipped).
+Uses `nmap`, `httpx`, `feroxbuster`, `nuclei`, and `whatweb`/`wappalyzer`
+automatically **if installed**, otherwise falls back to built-in pure-Python
+equivalents (nuclei is simply skipped).
 
 > ⚠️ **Authorization is mandatory.** Only assess systems you own or have written
 > permission to test. A mandatory scope engine gates every network operation and
@@ -148,8 +151,20 @@ netassess nextphase --state netassess-out/state.json --output phase2
 - **SSL/TLS on every HTTPS service** — including non-standard ports.
 - **Default-login exposure** — flags exposed login/admin panels of identified
   products known to ship default credentials. **No credentials are submitted.**
-- **Endpoint/JS analysis** — extracts links, JS files and API-looking paths from
-  each web service, highlighting sensitive endpoints.
+- **Endpoint/JS analysis + secret scanning** — extracts links/JS/API paths and
+  **scans JS for leaked keys** (AWS/Google/GitHub/Slack/Stripe, private keys,
+  JWTs; redacted). A bounded **`--crawl`** feeds linked pages/JS in too.
+- **Technology fingerprinting** — built-in signatures plus **WhatWeb/Wappalyzer**
+  when installed (`--tech-tool`); detected tech drives **tech-aware content
+  extensions** (PHP→`php`, ASP.NET→`aspx`, …), with a basic fallback otherwise.
+- **Reuse existing recon** — `--nmap-import` ingests an nmap `-oX`/`-oG` scan;
+  `--skip-portscan` probes known-open ports directly; `--resume` continues a run.
+- **Extra CVE source** — `--nmap-vuln` folds nmap NSE (`vulners`/`vuln`) results
+  in, deduped against the offline KB.
+- **Exports** — `--csv` and `--sarif` (SARIF 2.1.0 for CI / code-scanning).
+- **Adaptive & safe at scale** — RTT-based timeouts and rate backoff on resource
+  exhaustion; `--profile`, `--common-ports`, high `--rate`/`--concurrency` tune
+  large sweeps.
 - **Content discovery** — feroxbuster (auto, tuned for signal) or built-in probe,
   default SecLists `common.txt`; `--content-discovery`.
 - **Auditable runs** — per-stage tool/command, targets, results, output paths,

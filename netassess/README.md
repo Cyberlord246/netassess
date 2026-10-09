@@ -7,12 +7,14 @@ structured attack-surface inventory:
 ```
 scope gate → live hosts + reverse DNS → port scan → service/version ID →
 protocol probes (HTTP/HTTPS on any open port, TLS, tech, misconfig) →
-virtual-host discovery → default-login exposure → content discovery* →
-endpoint/JS analysis → nuclei* / UDP* → vuln heuristics → CVE + KEV/EPSS →
-validation → role/anomaly analysis → report (MD / HTML / JSON)
+virtual-host discovery → technology fingerprint → default-login exposure →
+content discovery* (tech-aware extensions) → endpoint/JS + secret scan →
+nuclei* / UDP* → vuln heuristics → CVE + KEV/EPSS (+ nmap NSE*) →
+validation → role/anomaly analysis → report (MD / HTML / JSON / CSV* / SARIF*)
                                         └→ nextphase (phase-2 plan)
 ```
-<sub>* opt-in (`--content-discovery`, `--nuclei`, `--udp`, or a profile)</sub>
+<sub>* opt-in (`--content-discovery`, `--nuclei`, `--udp`, `--nmap-vuln`,
+`--csv`, `--sarif`, or a profile)</sub>
 
 Each stage's output feeds the next, and every stage logs the tool/command or
 module it used, the hosts/ports/services it handled, its output location and
@@ -21,9 +23,9 @@ fails is marked `FAILED` and listed under **Assessment Gaps** rather than being
 silently treated as done.
 
 It runs with **zero external dependencies** (Python 3.8+ stdlib only).
-`nmap`, `httpx`, `feroxbuster`, and `nuclei` are used automatically **if on the
-PATH** for richer/faster results; otherwise pure-Python equivalents run (nuclei
-is simply skipped).
+`nmap`, `httpx`, `feroxbuster`, `nuclei`, and `whatweb`/`wappalyzer` are used
+automatically **if on the PATH** for richer/faster results; otherwise pure-Python
+equivalents run (nuclei is simply skipped).
 
 > ⚠️ **Authorization is mandatory.** Only assess systems you own or have written
 > permission to test. The Scope Engine is a hard gate on every network
@@ -104,11 +106,16 @@ python -m netassess nextphase --state out/state.json --output phase2
 | `--mode` | `deterministic` (default) · `ai` · `auto` |
 | `--discovery` | host discovery: `auto` (nmap `-sn` if available + TCP fallback), `nmap`, or `tcp` (built-in) |
 | `--skip-discovery` | treat every in-scope host as live (skip discovery) |
+| `--skip-portscan` | assume `--ports` open and probe directly (no connect-scan) |
+| `--nmap-import FILE` | import an nmap `-oX`/`-oG` scan: seeds open ports, hosts join scope |
+| `--resume` | continue a prior run; skip stages already completed |
 | `--ports` | explicit set, e.g. `22,80,443` or `1-1024` (overrides the default) |
 | `--common-ports` | fast preset: 40 high-signal ports instead of top-1000 |
 | `--full-port-scan` | scan all 65,535 TCP ports |
 | `--udp` / `--udp-ports` | also scan common UDP ports (SNMP/NTP/DNS probes); or an explicit set |
 | `--http-tool` | HTTP-probe backend: `auto` (httpx if installed, else built-in) · `httpx` · `builtin` |
+| `--tech-tool` | tech fingerprinting: `auto` (whatweb/wappalyzer if installed + built-in) · `whatweb` · `wappalyzer` · `builtin` |
+| `--crawl` / `--crawl-depth` / `--crawl-max-pages` | bounded same-host crawl feeding endpoint + secret analysis |
 | `--no-vhosts` | disable virtual-host discovery (on by default: probes TLS SAN/CN names) |
 | `--deep` | deeper service detection (still non-destructive) |
 | `--concurrency` / `--rate` / `--timeout` / `--retries` | performance & safety limits |
@@ -128,6 +135,9 @@ python -m netassess nextphase --state out/state.json --output phase2
 | `--cve-online` | enrich CVE findings via NVD (network, opt-in) |
 | `--cve-db` | merge an extra CVE JSON file into the built-in KB |
 | `--no-cve` / `--no-html` | disable CVE correlation / HTML report |
+| `--nmap-vuln` / `--nmap-vuln-script` | fold nmap NSE (`vulners`/`vuln`) in as an extra CVE source |
+| `--csv` / `--sarif` | also write `report.csv` / `report.sarif` (SARIF 2.1.0 for CI) |
+| `--no-adaptive-rate` | disable rate backoff on resource-exhaustion errors |
 | `--output` | output directory (report.md, report.json, report.html, state.json) |
 
 ## Port selection
