@@ -618,6 +618,8 @@ class AssessmentEngine:
             port.service.name = "https" if svc.scheme == "https" else "http"
             port.service.confidence = self._high_conf()
             port.service.evidence = f"httpx: HTTP {svc.status}"
+            from .services import apply_server_version
+            apply_server_version(port, svc.server)
             # safe misconfig checks (OPTIONS/TRACE/dir-listing) that httpx doesn't do
             if httpprobe is not None:
                 for f in httpprobe.misconfig(host, port, svc):

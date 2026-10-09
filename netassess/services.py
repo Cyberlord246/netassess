@@ -124,3 +124,26 @@ def is_tls(port: Port) -> bool:
 
 def default_scheme(port: Port) -> str:
     return "https" if is_tls(port) else "http"
+
+
+# "nginx/1.18.0", "Apache/2.4.49 (Ubuntu)", "Microsoft-IIS/10.0", "openresty"
+_SERVER_RE = re.compile(r"^([A-Za-z][\w .+-]*?)(?:/(\d[\w.]*))?(?:\s|$|\()")
+
+
+def apply_server_version(port: Port, server: str) -> None:
+    """Populate the port's service product/version from an HTTP Server header, so
+    web servers appear in the Service Versions report (not just header-detected
+    tech). Only fills empty fields; a dedicated -sV result still wins."""
+    if not server:
+        return
+    if not port.service.banner:
+        port.service.banner = server
+    m = _SERVER_RE.match(server.strip())
+    if not m:
+        return
+    if not port.service.product:
+        port.service.product = m.group(1).strip()
+    if m.group(2) and not port.service.version:
+        port.service.version = m.group(2)
+    if port.service.confidence == Confidence.LOW:
+        port.service.confidence = Confidence.MEDIUM

@@ -82,6 +82,10 @@ class HTTPProbe(ServiceProbe):
             port.service.name = "https" if svc.scheme == "https" else "http"
             port.service.confidence = Confidence.HIGH
             port.service.evidence = f"HTTP {svc.status} response to GET /"
+        # map the Server header into product/version so web servers show up in
+        # the Service Versions report even without nmap -sV
+        from ..services import apply_server_version
+        apply_server_version(port, svc.server)
 
         findings = self._evaluate(host, port, svc)
         findings += self._misconfig_checks(host, port, svc)
