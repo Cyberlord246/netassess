@@ -70,8 +70,21 @@ class EndpointAnalyzer:
         # root (body, url) kept for the secret scanner's legacy path
         self._last_root = ((self._bodies[0][1], self._bodies[0][0])
                            if self._bodies else ("", base))
+        self._merge_tech(svc)
         self._favicon(host, svc, host_header)
         return eps
+
+    def _merge_tech(self, svc) -> None:
+        """Run body-based technology detection over the fetched page(s) and merge
+        into svc.technologies. This adds CMS/SPA/library fingerprints that the
+        header-only path (incl. httpx) misses, using bodies we already have."""
+        from .techdetect import detect_technologies
+        existing = {t.name for t in (svc.technologies or [])}
+        for _url, body in self._bodies[:5]:
+            for t in detect_technologies(svc, body=body):
+                if t.name not in existing:
+                    svc.technologies.append(t)
+                    existing.add(t.name)
 
     def _crawl(self, svc, parsed, host_header, base) -> list[str]:
         """Bounded same-host BFS. Records page bodies (for secret scanning) and

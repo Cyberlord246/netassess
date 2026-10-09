@@ -109,6 +109,7 @@ The scan banner prints the active profile and exactly which options it enabled.
 | Option | Meaning |
 |---|---|
 | `--http-tool {auto,httpx,builtin}` | HTTP-probe backend (default `auto`): use ProjectDiscovery `httpx` if installed (fast bulk fingerprint), else the built-in probe. |
+| `--tech-tool {auto,whatweb,wappalyzer,builtin}` | technology fingerprinting (default `auto`): use **WhatWeb**/**Wappalyzer** if installed (merged with built-in signatures), force one, or `builtin` for signatures only. Detected tech also drives **tech-aware content-discovery extensions** (PHP→`php`, ASP.NET→`aspx`, Tomcat→`jsp`…). |
 | `--no-vhosts` | disable virtual-host discovery (it runs by default: probes TLS SAN/CN names as vhosts). |
 
 ### Content discovery (opt-in)

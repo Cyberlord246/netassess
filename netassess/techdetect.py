@@ -43,6 +43,17 @@ _SIGS = [
     ("Grafana", "app", ("body", r"grafana")),
     ("Jenkins", "app", ("header", "x-jenkins", r".+")),
     ("Elasticsearch", "datastore", ("body", r'"cluster_name"|"lucene_version"')),
+    # modern front-end frameworks / SPAs (body markers — the common case today)
+    ("React", "framework", ("body", r"__REACT_DEVTOOLS|data-reactroot|/static/js/main\.")),
+    ("Angular", "framework", ("body", r"ng-version=|ng-app|zone\.js")),
+    ("Vue.js", "framework", ("body", r"data-v-[0-9a-f]{8}|__VUE__")),
+    ("Next.js", "framework", ("body", r"/_next/|__NEXT_DATA__")),
+    ("Nuxt.js", "framework", ("body", r"__NUXT__|/_nuxt/")),
+    ("jQuery", "library", ("body", r"jquery(?:[.-][\d.]+)?(?:\.min)?\.js")),
+    ("Bootstrap", "library", ("body", r"bootstrap(?:[.-][\d.]+)?(?:\.min)?\.(?:css|js)")),
+    ("WordPress", "cms", ("header", "link", r"wp-json")),
+    ("Shopify", "ecommerce", ("body", r"cdn\.shopify\.com|Shopify\.")),
+    ("Magento", "ecommerce", ("body", r"/static/version\d|Mage\.|magento")),
     ("Tomcat", "app-server", ("server", r"tomcat|coyote")),
     ("Jetty", "app-server", ("server", r"jetty")),
     ("Gunicorn", "app-server", ("server", r"gunicorn")),
@@ -61,12 +72,52 @@ _VERSION_HEADER_RE = {
 }
 
 
-def detect_technologies(svc: HTTPService) -> list[Technology]:
+# technology/language -> file extensions worth probing in content discovery.
+# Keyed by a lowercase substring matched against tech names, server, x-powered-by.
+_TECH_EXT = [
+    ("php", ["php", "phtml", "php5", "php7", "inc"]),
+    ("wordpress", ["php"]),
+    ("drupal", ["php"]),
+    ("joomla", ["php"]),
+    ("laravel", ["php"]),
+    ("asp.net", ["aspx", "asp", "ashx", "asmx", "axd"]),
+    ("iis", ["aspx", "asp", "ashx"]),
+    ("servlet", ["jsp", "jspx", "do", "action"]),
+    ("tomcat", ["jsp", "jspx", "do", "action"]),
+    ("jetty", ["jsp"]),
+    ("coldfusion", ["cfm", "cfc"]),
+    ("express", ["js", "json"]),
+    ("node", ["js", "json"]),
+    ("django", ["py"]),
+    ("flask", ["py"]),
+    ("ruby on rails", ["rb", "erb", "json"]),
+    ("perl", ["pl", "cgi"]),
+]
+
+
+def extensions_for_service(svc: HTTPService) -> list[str]:
+    """Extensions to probe for this service, derived from its identified
+    technologies/server/language. Empty when nothing identifiable."""
+    hay = " ".join([
+        (svc.server or ""),
+        (svc.headers.get("x-powered-by", "") if svc.headers else ""),
+        " ".join(t.name for t in (svc.technologies or [])),
+    ]).lower()
+    out: list[str] = []
+    for key, exts in _TECH_EXT:
+        if key in hay:
+            for e in exts:
+                if e not in out:
+                    out.append(e)
+    return out
+
+
+def detect_technologies(svc: HTTPService, body: str = "") -> list[Technology]:
     headers = {k.lower(): (v or "") for k, v in svc.headers.items()}
     server = headers.get("server", "")
     powered = headers.get("x-powered-by", "")
     setcookie = headers.get("set-cookie", "")
-    body = ""  # body not stored on svc; header+cookie signals only here
+    body = body or ""          # response body enables CMS/SPA/library detection
     found: dict[str, Technology] = {}
 
     def add(name, category, evidence, conf=Confidence.MEDIUM):

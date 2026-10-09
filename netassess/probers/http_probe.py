@@ -73,8 +73,7 @@ class HTTPProbe(ServiceProbe):
             if svc is None:
                 return ProbeResult(error=err or err2)
 
-        from ..techdetect import detect_technologies
-        svc.technologies = detect_technologies(svc)
+        # (technologies already detected in _build, where the body was available)
 
         # Confirmed HTTP: stamp the real identity on the port so a low-confidence
         # port-table guess (e.g. 'irdmi' on 7999) is corrected to http/https and
@@ -308,7 +307,7 @@ class HTTPProbe(ServiceProbe):
             title = re.sub(r"\s+", " ", m.group(1)).strip()[:200]
         sec = {h: (h in headers) for h in SECURITY_HEADERS}
         clen = headers.get("content-length")
-        return HTTPService(
+        svc = HTTPService(
             url=url, ip=ip, port=port, scheme=scheme, status=status,
             title=title, server=headers.get("server", ""),
             content_type=headers.get("content-type", ""),
@@ -316,6 +315,11 @@ class HTTPProbe(ServiceProbe):
             redirect_chain=chain, headers=dict(headers), security_headers=sec,
             tls=tls, response_ms=round(elapsed, 2),
         )
+        # detect technologies here, where the response BODY is available (enables
+        # CMS/SPA/library fingerprints, not just header/cookie signals)
+        from ..techdetect import detect_technologies
+        svc.technologies = detect_technologies(svc, body=text)
+        return svc
 
     # -- findings --------------------------------------------------------- #
     def _evaluate(self, host: Host, port: Port, svc: HTTPService) -> list[Finding]:

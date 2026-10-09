@@ -98,6 +98,7 @@ class Config:
 
     # --- http probing -----------------------------------------------------
     http_tool: str = "auto"           # auto | httpx | builtin (bulk HTTP fingerprint)
+    tech_tool: str = "auto"           # auto | whatweb | wappalyzer | builtin (tech ID)
 
     # --- content discovery ------------------------------------------------
     content_discovery: bool = False   # probe common web paths (GET-only, opt-in)

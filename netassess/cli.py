@@ -113,6 +113,8 @@ def _build_config(args) -> Config:
         cfg.skip_discovery = True
     if getattr(args, "http_tool", None):
         cfg.http_tool = args.http_tool
+    if getattr(args, "tech_tool", None):
+        cfg.tech_tool = args.tech_tool
     if getattr(args, "output", None):
         cfg.output_dir = args.output
     if getattr(args, "ai_provider", None):
@@ -706,6 +708,12 @@ def _add_scan_args(sp: argparse.ArgumentParser):
                     choices=["auto", "httpx", "builtin"], default="auto",
                     help="HTTP-probe backend: auto (use ProjectDiscovery httpx if "
                          "installed, else built-in), httpx (force), builtin")
+    sp.add_argument("--tech-tool", dest="tech_tool",
+                    choices=["auto", "whatweb", "wappalyzer", "builtin"],
+                    default="auto",
+                    help="technology fingerprinting: auto (use whatweb/wappalyzer "
+                         "if installed, merged with built-in signatures), or force "
+                         "one; builtin = signatures only")
     sp.add_argument("--output", help="output directory")
     sp.add_argument("--ai-provider", dest="ai_provider",
                     choices=["none", "anthropic"], default="none")

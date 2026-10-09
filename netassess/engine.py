@@ -152,6 +152,8 @@ class AssessmentEngine:
             ("Service & protocol probes", self._phase_probe,      True,  self._sum_http,     ""),
             ("Virtual-host discovery",    self._phase_vhost,      self.vhost is not None,   self._sum_vhost,
              "disabled (--no-vhosts)"),
+            ("Technology fingerprinting",  self._phase_tech,       getattr(self.config, "tech_tool", "auto") != "builtin", self._sum_tech,
+             "external tools off (--tech-tool builtin)"),
             ("Default-login exposure",    self._phase_default_login, True, self._sum_deflogin, ""),
             ("Web content discovery",     self._phase_content,    self.content is not None, self._sum_content,
              "not requested (enable with --content-discovery)"),
@@ -773,13 +775,27 @@ class AssessmentEngine:
             host, svc, wordlist=wordlist,
             threads=self.config.concurrency, depth=self.config.content_depth,
             timeout=int(self.config.timeout) + 5, rate=self.config.rate,
-            extensions=self.config.content_extensions,
+            extensions=self._ferox_extensions(svc),
             thorough=self.config.content_thorough,
         )
         if res.not_found:
             # shouldn't happen (we checked available()), but be safe
             return self.content.scan_service(host, svc)
         return findings
+
+    def _ferox_extensions(self, svc) -> str:
+        """Merge the operator's --content-extensions with extensions derived from
+        the service's detected technology (PHP->php, ASP.NET->aspx, ...), so
+        content discovery probes the right file types per target."""
+        from .techdetect import extensions_for_service
+        exts = [e for e in (self.config.content_extensions or "").replace(" ", "").split(",") if e]
+        for e in extensions_for_service(svc):
+            if e not in exts:
+                exts.append(e)
+        if extensions_for_service(svc):
+            self._log(f"[content] {svc.ip}:{svc.port}: tech-aware extensions -> "
+                      f"{','.join(exts)}")
+        return ",".join(exts)
 
     def _phase_vhost(self):
         if self.vhost is None:
@@ -806,6 +822,63 @@ class AssessmentEngine:
                 host.notes.append(f"vhost probe error on {svc.port}: {exc}")
             self.progress.items(idx, total, "TLS services")
         self._log(f"[vhost] {added} distinct virtual host(s) discovered")
+
+    def _sum_tech(self) -> str:
+        n = sum(len(s.technologies) for _h, s in self.graph.all_http_services())
+        return f"{n} technology match(es)"
+
+    def _phase_tech(self):
+        """Merge external fingerprinting (whatweb/wappalyzer) into each service's
+        technology list. Built-in signatures already ran during probing; this
+        adds the richer external database when a tool is installed."""
+        from .adapters.techtools import choose
+        services = self.graph.all_http_services()
+        if not services:
+            self._log("[tech] no web services to fingerprint")
+            return
+        adapter, name = choose(self.config.tech_tool)
+        if adapter is None:
+            self._log("[tech] no external tool (whatweb/wappalyzer) found — "
+                      "built-in signatures used")
+            return
+        urls = sorted({s.url for _h, s in services
+                       if self.scope.authorize(s.ip, s.port).allowed})
+        if not urls:
+            return
+        self._tool("tech", name, cmd=f"{name} ({len(urls)} url(s))")
+        results: dict = {}
+        if name == "whatweb":
+            import tempfile
+            tf = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False,
+                                             encoding="utf-8")
+            try:
+                tf.write("\n".join(urls))
+                tf.close()
+                results, res = adapter.scan(tf.name, threads=self.config.concurrency)
+            finally:
+                try:
+                    os.unlink(tf.name)
+                except OSError:
+                    pass
+            if res.not_found:
+                self._log("[tech] whatweb vanished — skipped")
+                return
+        else:   # wappalyzer: per-URL
+            for u in urls:
+                r, res = adapter.scan(u)
+                if not res.not_found:
+                    results.update(r)
+        added = 0
+        for host, svc in services:
+            got = results.get(svc.url) or results.get(svc.url.rstrip("/")) or []
+            existing = {t.name.lower() for t in svc.technologies}
+            for t in got:
+                if t.name.lower() not in existing:
+                    svc.technologies.append(t)
+                    existing.add(t.name.lower())
+                    added += 1
+        self._log(f"[tech] {name}: {added} technology match(es) merged across "
+                  f"{len(urls)} service(s)")
 
     def _phase_default_login(self):
         services = self.graph.all_http_services()
