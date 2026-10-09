@@ -426,6 +426,44 @@ class DNSProbe(ServiceProbe):
         return msg[p+1:p+1+txtlen].decode("latin-1", errors="replace")
 
 
+# SMB2/3 dialect revision -> human version
+_SMB2_DIALECTS = {
+    0x0202: "SMB 2.0.2", 0x0210: "SMB 2.1", 0x0300: "SMB 3.0",
+    0x0302: "SMB 3.0.2", 0x0311: "SMB 3.1.1", 0x02FF: "SMB 2.x (wildcard)",
+}
+
+
+def smb2_negotiate_request() -> bytes:
+    """Minimal SMB2 NEGOTIATE over direct TCP (445). No auth, no session setup."""
+    dialects = [0x0202, 0x0210, 0x0300, 0x0302, 0x0311]
+    hdr = (b"\xfeSMB" + struct.pack("<H", 64) + struct.pack("<H", 0)
+           + struct.pack("<I", 0) + struct.pack("<H", 0) + struct.pack("<H", 0)
+           + struct.pack("<I", 0) + struct.pack("<I", 0) + struct.pack("<Q", 0)
+           + struct.pack("<I", 0) + struct.pack("<I", 0) + struct.pack("<Q", 0)
+           + b"\x00" * 16)                       # 64-byte SMB2 header
+    body = (struct.pack("<H", 36) + struct.pack("<H", len(dialects))
+            + struct.pack("<H", 1) + struct.pack("<H", 0) + struct.pack("<I", 0)
+            + b"\x00" * 16 + struct.pack("<I", 0) + struct.pack("<H", 0)
+            + struct.pack("<H", 0)
+            + b"".join(struct.pack("<H", d) for d in dialects))
+    smb = hdr + body
+    return struct.pack(">I", len(smb)) + smb    # 4-byte NetBIOS length prefix
+
+
+def parse_smb2_dialect(data: bytes):
+    """Return the negotiated SMB2 dialect revision int, or None."""
+    if len(data) < 74 or data[4:8] != b"\xfeSMB":
+        return None
+    return struct.unpack("<H", data[72:74])[0]   # DialectRevision in NEGOTIATE resp
+
+
+# well-known SMB1 NEGOTIATE (offers "NT LM 0.12"); a \xffSMB reply == SMBv1 on
+_SMB1_NEGOTIATE = (
+    b"\x00\x00\x00\x2f\xff\x53\x4d\x42\x72\x00\x00\x00\x00\x18\x53\xc8"
+    b"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff\xff\xfe"
+    b"\x00\x00\x00\x00\x00\x0c\x00\x02NT LM 0.12\x00")
+
+
 class SMBProbe(ServiceProbe):
     name = "smb"
 
@@ -433,37 +471,74 @@ class SMBProbe(ServiceProbe):
         return port.service.name in ("smb", "netbios-ssn", "microsoft-ds") or \
             port.number in (139, 445)
 
+    def _exchange(self, ip: str, port: int, payload: bytes) -> bytes:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(self.config.timeout)
+        try:
+            sock.connect((ip, port))
+            sock.sendall(payload)
+            return sock.recv(1024)
+        except OSError:
+            return b""
+        finally:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
     def probe(self, host: Host, port: Port) -> ProbeResult:
-        # Presence-only identification. Deep SMB enumeration is delegated to
-        # dedicated tools when authorized; here we just confirm the service.
-        with self.scope.slot(host.ip, port.number) as s:
+        ip, num = host.ip, port.number
+        with self.scope.slot(ip, num) as s:
             if not s.allowed:
                 return ProbeResult(error="scope denied")
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(self.config.timeout)
-            try:
-                sock.connect((host.ip, port.number))
-                reachable = True
-            except OSError as exc:
-                return ProbeResult(error=str(exc))
-            finally:
-                try:
-                    sock.close()
-                except OSError:
-                    pass
+            # 1) SMB2/3 negotiate -> dialect/version (read-only, no auth)
+            resp2 = self._exchange(ip, num, smb2_negotiate_request())
+        if not resp2:
+            return ProbeResult(error="connection failed")
+
         port.service.name = "smb"
+        port.service.product = "SMB"
         port.service.confidence = Confidence.MEDIUM
-        finding = Finding(
-            title="SMB service reachable", asset=f"{host.ip}:{port.number}",
+        info: dict = {"reachable": True}
+        findings = [Finding(
+            title="SMB service reachable", asset=f"{ip}:{num}",
             evidence="TCP 445/139 accepts connections",
             description="An SMB/CIFS service is reachable on this host.",
-            why_it_matters="SMB exposed to untrusted networks is a common lateral-movement and ransomware vector.",
+            why_it_matters="SMB exposed to untrusted networks is a common "
+                           "lateral-movement and ransomware vector.",
             severity=Severity.MEDIUM, confidence=Confidence.MEDIUM,
             impact="If reachable externally, high-risk exposure.",
-            remediation="Restrict SMB to internal/trusted segments; never expose to the internet.",
-            validation=ValidationState.OBSERVED, source="smb-probe", category="exposure",
-        )
-        return ProbeResult(data={"smb": {"reachable": reachable}}, findings=[finding])
+            remediation="Restrict SMB to internal/trusted segments; never expose "
+                        "to the internet.",
+            validation=ValidationState.OBSERVED, source="smb-probe",
+            category="exposure")]
+
+        dialect = parse_smb2_dialect(resp2)
+        if dialect is not None:
+            ver = _SMB2_DIALECTS.get(dialect, f"SMB2 dialect 0x{dialect:04x}")
+            port.service.version = ver.replace("SMB ", "")
+            port.service.confidence = Confidence.HIGH
+            port.service.evidence = f"SMB2 NEGOTIATE -> {ver}"
+            info["dialect"] = ver
+
+        # 2) does it also speak SMBv1? (separate connect; high-risk if yes)
+        with self.scope.slot(ip, num) as s2:
+            resp1 = self._exchange(ip, num, _SMB1_NEGOTIATE) if s2.allowed else b""
+        smbv1 = len(resp1) >= 8 and resp1[4:8] == b"\xffSMB"
+        info["smbv1"] = smbv1
+        if smbv1:
+            findings.append(Finding(
+                title="SMBv1 (SMB1/CIFS) enabled", asset=f"{ip}:{num}",
+                evidence="server answered an SMB1 NEGOTIATE (\\xffSMB)",
+                description="The host still supports the legacy SMBv1 protocol.",
+                why_it_matters="SMBv1 is deprecated and the vector for EternalBlue "
+                               "(MS17-010) / WannaCry / NotPetya.",
+                severity=Severity.HIGH, confidence=Confidence.HIGH,
+                impact="Wormable RCE exposure if unpatched; credential-relay risk.",
+                remediation="Disable SMBv1 entirely; require SMBv2/3 with signing.",
+                validation=ValidationState.CONFIRMED, source="smb-probe",
+                category="insecure-protocol"))
+        return ProbeResult(data={"smb": info}, findings=findings)
 
 
 class DatabaseProbe(ServiceProbe):
