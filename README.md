@@ -73,6 +73,13 @@ All bundled tools — **netassess, nmap, nuclei (+templates), and feroxbuster** 
 are present and verified on **both amd64 and arm64** (arm64 built & run via
 emulation: feroxbuster 2.13.1, nuclei v3.11.1, nmap 7.95).
 
+## Prerequisites
+
+**Only Python 3.8+ is required** — netassess runs on the standard library alone.
+Optional tools (`nmap`, `httpx`, `feroxbuster`, `nuclei`, `whatweb`/`wappalyzer`,
+`ssh`) are auto-detected and make stages faster/deeper, with pure-Python
+fallbacks. Full list + per-OS install commands: **[REQUIREMENTS.md](REQUIREMENTS.md)**.
+
 ## Install (without Docker)
 
 Install straight from GitHub (gives you a `netassess` command anywhere):
