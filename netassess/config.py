@@ -147,6 +147,11 @@ class Config:
     show_progress: bool = True        # print the staged plan + live progress
     resume: bool = False              # continue from a prior state.json, skip done stages
 
+    # --- bounded web crawler (opt-in; feeds endpoint/JS + secret scanning) ---
+    crawl: bool = False               # same-host BFS from each web root
+    crawl_depth: int = 2              # link-follow depth
+    crawl_max_pages: int = 40         # hard cap on pages fetched per service
+
     def effective_ports(self) -> list[int]:
         if self.full_port_scan:
             base = list(range(1, 65536))

@@ -30,32 +30,80 @@ _SENSITIVE = ("admin", "login", "api", "graphql", "config", "backup", ".env",
 _MAX_ENDPOINTS = 200
 
 
+# paths we crawl deeper into (HTML-ish); others are recorded but not followed
+_HTML_EXT = {"", "html", "htm", "php", "asp", "aspx", "jsp", "do", "action"}
+
+
 class EndpointAnalyzer:
     def __init__(self, config, scope):
         self.config = config
         self.scope = scope
         self.timeout = float(getattr(config, "timeout", 5.0)) + 2.0
+        self.crawl = bool(getattr(config, "crawl", False))
+        self.crawl_depth = int(getattr(config, "crawl_depth", 2))
+        self.crawl_max_pages = int(getattr(config, "crawl_max_pages", 40))
+        self._bodies: list[tuple[str, str]] = []   # (url, text) for secret scan
 
     def analyze_service(self, host, svc) -> list[str]:
-        """Return the list of endpoints extracted for one service (also stored on
-        ``svc.endpoints``)."""
+        """Extract endpoints for one service (stored on ``svc.endpoints``).
+
+        Root-only by default; with --crawl it does a bounded same-host BFS and
+        accumulates every page body + JS reference for the secret scan."""
         if not self.scope.authorize(svc.ip, svc.port).allowed:
             return []
-        host_header = None
-        # if the service URL carries a vhost name, present it (keeps SNI/Host right)
         parsed = urlparse(svc.url)
-        if parsed.hostname and parsed.hostname != svc.ip:
-            host_header = parsed.hostname
-        status, headers, body = fetch(svc.ip, svc.port, svc.scheme, "/",
-                                      host_header=host_header, timeout=self.timeout)
-        if not body:
-            return []
-        eps = self._extract(body, svc, parsed)
+        host_header = parsed.hostname if (parsed.hostname and
+                                          parsed.hostname != svc.ip) else None
+        base = f"{svc.scheme}://{parsed.hostname or svc.ip}:{svc.port}/"
+        self._bodies = []
+        if self.crawl:
+            eps = self._crawl(svc, parsed, host_header, base)
+        else:
+            status, headers, body = fetch(svc.ip, svc.port, svc.scheme, "/",
+                                          host_header=host_header, timeout=self.timeout)
+            if not body:
+                self._favicon(host, svc, host_header)
+                return []
+            self._bodies = [(base, body)]
+            eps = self._extract(body, svc, parsed)
         svc.endpoints = eps
-        # keep the root body around so a caller can scan it for secrets too
-        self._last_root = (body, f"{svc.scheme}://{parsed.hostname or svc.ip}:{svc.port}/")
+        # root (body, url) kept for the secret scanner's legacy path
+        self._last_root = ((self._bodies[0][1], self._bodies[0][0])
+                           if self._bodies else ("", base))
         self._favicon(host, svc, host_header)
         return eps
+
+    def _crawl(self, svc, parsed, host_header, base) -> list[str]:
+        """Bounded same-host BFS. Records page bodies (for secret scanning) and
+        returns the de-duplicated endpoint list. GET-only, scope-gated, capped by
+        crawl_max_pages / crawl_depth; never leaves the target host."""
+        from collections import deque
+        seen: set[str] = set()
+        eps: set[str] = set()
+        queue = deque([("/", 0)])
+        pages = 0
+        while queue and pages < self.crawl_max_pages:
+            path, depth = queue.popleft()
+            if path in seen:
+                continue
+            seen.add(path)
+            if not self.scope.authorize(svc.ip, svc.port).allowed:
+                break
+            status, headers, body = fetch(svc.ip, svc.port, svc.scheme, path,
+                                          host_header=host_header, timeout=self.timeout)
+            if not body:
+                continue
+            pages += 1
+            self._bodies.append((base.rstrip("/") + path, body))
+            page_eps = self._extract(body, svc, parsed)
+            for e in page_eps:
+                eps.add(e)
+                ext = e.split("?", 1)[0].rsplit("/", 1)[-1]
+                ext = ext.rsplit(".", 1)[-1].lower() if "." in ext else ""
+                if (depth + 1 < self.crawl_depth and ext in _HTML_EXT
+                        and e not in seen and "/api/" not in e.lower()):
+                    queue.append((e, depth + 1))
+        return sorted(eps)
 
     def _favicon(self, host, svc, host_header) -> None:
         """Fetch /favicon.ico (if any) and store the Shodan-style hash; add a
@@ -120,10 +168,14 @@ class EndpointAnalyzer:
         base = f"{svc.scheme}://{parsed.hostname or svc.ip}:{svc.port}"
 
         hits: list[dict] = []
-        # 1) the root document we already fetched (inline script / config blobs)
-        root = getattr(self, "_last_root", None)
-        if root and root[1].startswith(base):
-            hits += scan_text(root[0], root[1])
+        # 1) every page body already fetched (root, or all crawled pages) —
+        # inline script / config blobs live here too.
+        for url, text in (self._bodies or []):
+            hits += scan_text(text, url)
+        if not self._bodies:
+            root = getattr(self, "_last_root", None)
+            if root and root[0]:
+                hits += scan_text(root[0], root[1])
 
         # 2) the referenced .js files (bounded)
         js_paths = [e for e in (svc.endpoints or [])

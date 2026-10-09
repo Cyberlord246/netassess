@@ -138,6 +138,12 @@ def _build_config(args) -> Config:
         cfg.show_progress = False
     if getattr(args, "resume", False):
         cfg.resume = True
+    if getattr(args, "crawl", False):
+        cfg.crawl = True
+    if getattr(args, "crawl_depth", None) is not None:
+        cfg.crawl_depth = args.crawl_depth
+    if getattr(args, "crawl_max_pages", None) is not None:
+        cfg.crawl_max_pages = args.crawl_max_pages
     if getattr(args, "auth_config", None):
         cfg.auth_config = args.auth_config
         cfg.validation_credentialed = True
@@ -247,7 +253,7 @@ def cmd_scan(args) -> int:
     if _preset != "standard" and _applied:
         _labels = {"common_ports": "fast ~40 ports", "deep": "deep probes",
                    "content_discovery": "content discovery", "nuclei": "nuclei",
-                   "ports": "web ports"}
+                   "ports": "web ports", "crawl": "web crawl"}
         print(f"               enabled: "
               f"{', '.join(_labels.get(k, k) for k in _applied)}")
     print(f" targets     : {', '.join(cfg.targets)}")
@@ -642,6 +648,13 @@ def _add_scan_args(sp: argparse.ArgumentParser):
     sp.add_argument("--resume", action="store_true",
                     help="continue a prior run: load state.json from the output "
                          "dir and skip stages already completed")
+    sp.add_argument("--crawl", action="store_true",
+                    help="bounded same-host web crawl from each web root, feeding "
+                         "more pages/JS into endpoint + secret analysis (GET-only)")
+    sp.add_argument("--crawl-depth", dest="crawl_depth", type=int,
+                    help="crawl link-follow depth (default 2)")
+    sp.add_argument("--crawl-max-pages", dest="crawl_max_pages", type=int,
+                    help="max pages fetched per service while crawling (default 40)")
     sp.add_argument("--no-validate", dest="no_validate", action="store_true",
                     help="disable the validation layer (it runs by default: safe, "
                          "non-destructive assessment of candidate findings)")

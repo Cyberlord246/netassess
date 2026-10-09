@@ -121,6 +121,9 @@ The scan banner prints the active profile and exactly which options it enabled.
 | `--content-depth N` | feroxbuster recursion depth (default 2). |
 | `--content-extensions LIST` | feroxbuster extensions, e.g. `php,bak,zip,sql`. |
 | `--content-thorough` | feroxbuster: collect real extensions + probe for backups. |
+| `--crawl` | bounded same-host web crawl from each web root (GET-only), feeding many more pages + JS into endpoint and **secret** analysis. On automatically in `--profile deep`/`web`. |
+| `--crawl-depth N` | crawl link-follow depth (default 2). |
+| `--crawl-max-pages N` | max pages fetched per service while crawling (default 40). |
 
 ### Vulnerability intel & validation
 | Option | Meaning |
@@ -287,7 +290,9 @@ Two always-on built-in stages (no flags needed):
   references and API-looking paths, highlighting sensitive-looking endpoints.
   It also **fetches the referenced JS and scans for leaked secrets** (AWS/Google/
   GitHub/Slack/Stripe keys, private keys, JWTs — reported with redacted snippets)
-  and computes the **Shodan-style favicon hash** for app fingerprinting.
+  and computes the **Shodan-style favicon hash** for app fingerprinting. By
+  default it reads each service's root page; with `--crawl` it does a bounded
+  same-host crawl so secrets/endpoints on linked pages and their JS are covered.
 
 ## External tools (optional accelerators; built-in fallbacks otherwise)
 

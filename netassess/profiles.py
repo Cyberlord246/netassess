@@ -46,6 +46,7 @@ PROFILES: dict[str, dict] = {
         "deep": True,
         "content_discovery": True,
         "nuclei": True,
+        "crawl": True,
     },
     "web": {
         "_desc": "Web-app focus — common web ports, content discovery, and "
@@ -54,6 +55,7 @@ PROFILES: dict[str, dict] = {
         "ports": WEB_PORTS,
         "content_discovery": True,
         "nuclei": True,
+        "crawl": True,
     },
 }
 
