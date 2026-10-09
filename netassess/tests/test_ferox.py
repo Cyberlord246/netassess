@@ -29,13 +29,12 @@ def test_argv_filters_noise_keeps_useful():
     a = FeroxbusterAdapter()
     argv = a.build_argv("https://t/", "wl.txt")
     fs = argv[argv.index("--filter-status") + 1]
-    assert "502" in fs and "400" in fs        # server-error / bad-request noise filtered
-    # useful codes — including 404 — are NOT hard-filtered (404 kept: a resource
-    # can exist yet answer 404; --auto-tune collapses the generic ones)
-    for keep in (200, 301, 401, 403, 404):
+    assert "404" in fs and "502" in fs        # not-found + server-error noise filtered
+    # useful non-200 codes are NOT filtered
+    for keep in (200, 301, 401, 403):
         assert str(keep) not in fs.split(",")
     from netassess.adapters.feroxbuster_adapter import INTERESTING_STATUS
-    assert 404 in INTERESTING_STATUS      # and surfaced by the parser
+    assert 404 not in INTERESTING_STATUS      # a 404 is not a reachable resource
 
 
 def test_argv_extensions_and_thorough():
@@ -61,8 +60,8 @@ def test_parse_json_filters_and_extracts():
     urls = {r["url"] for r in recs}
     assert "https://t/admin" in urls          # 301 kept (useful)
     assert "https://t/.env" in urls           # 200 kept
-    assert "https://t/missing" in urls         # 404 KEPT (resource may exist; ferox auto-tune collapses generic 404s upstream)
-    assert "https://t/boom" not in urls        # 502 still dropped as noise
+    assert "https://t/missing" not in urls     # 404 filtered (not reachable)
+    assert "https://t/boom" not in urls        # 502 dropped as noise
     assert all(r["status"] in INTERESTING_STATUS for r in recs)
 
 
@@ -85,15 +84,15 @@ def test_scan_service_builds_graded_findings():
         recs, findings, _res = a.scan_service(host, svc, wordlist="wl.txt")
     finally:
         mod.run = orig
-    titles = {f.title for f in findings}
-    assert any(".env" in t for t in titles)
-    # .env graded high, source attributed to feroxbuster
-    env = next(f for f in findings if ".env" in f.title)
-    assert env.severity.value == "high"
+    # findings are grouped by category per host; the path is in the evidence
+    env = next(f for f in findings if f.category == "content-secrets")
+    assert ".env" in env.evidence
+    assert env.severity.value == "high"        # .env graded high
     assert env.source == "feroxbuster"
     # 401 admin present but access-controlled (downgraded from medium to low)
-    admin = next(f for f in findings if "admin" in f.title.lower())
+    admin = next(f for f in findings if f.category == "content-admin")
     assert admin.severity.value in ("low", "medium")
+    assert "admin" in admin.evidence
 
 
 def test_build_argv_pins_ip_and_sends_vhost_header():

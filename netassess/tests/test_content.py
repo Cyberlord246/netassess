@@ -76,7 +76,9 @@ def test_content_discovery_finds_present_skips_absent():
         paths = {d["path"]: d for d in svc.discovered_paths}
         assert "/admin" in paths and paths["/admin"]["status"] == 200
         assert "/does-not-exist" not in paths          # 404 filtered
-        assert any("/admin" in f.title for f in findings)
+        # grouped by category: the admin finding lists /admin in its evidence
+        assert any(f.category == "content-admin" and "admin" in f.evidence
+                   for f in findings)
         assert paths["/admin"]["title"] == "Admin Panel"   # body was read
     finally:
         srv.shutdown()
@@ -100,7 +102,9 @@ def test_content_discovery_reuses_connection_across_many_paths():
         srv.shutdown()
 
 
-def test_distinct_404_kept_generic_404_dropped():
+def test_404s_never_recorded():
+    # a 404 is "not found" — it must never appear as a discovered path, even a
+    # distinct one (reporting 404s produced misleading "reachable (404)" findings)
     srv, port = _serve(_Handler404)
     try:
         cfg = Config(targets=["127.0.0.1/32"], timeout=2.0)
@@ -111,11 +115,7 @@ def test_distinct_404_kept_generic_404_dropped():
         svc = HTTPService(url=f"http://127.0.0.1:{port}/", ip="127.0.0.1",
                           port=port, scheme="http")
         cd.scan_service(host, svc)
-        paths = {d["path"]: d for d in svc.discovered_paths}
-        # a 404 that DIFFERS from the generic not-found page is surfaced
-        assert "/secret" in paths and paths["/secret"]["status"] == 404
-        # the generic 404 (matches baseline length) is suppressed as noise
-        assert "/nope" not in paths
+        assert svc.discovered_paths == []       # both returned 404 -> nothing
     finally:
         srv.shutdown()
 
@@ -190,13 +190,32 @@ def test_other_statuses_grouped_with_representatives():
     assert "5 URL" in f401.evidence
 
 
-def test_high_value_paths_stay_individual():
+def test_high_value_paths_grouped_by_category():
     from ..content_discovery import make_findings
-    hits = [{"path": ".env", "url": "http://h/.env", "status": 200,
-             "category": "secrets", "sev": Severity.HIGH, "title": "",
-             "location": "", "content_type": "", "length": 40}]
+    hits = [
+        {"path": ".env", "url": "http://h/.env", "status": 200,
+         "category": "secrets", "sev": Severity.HIGH, "title": "",
+         "location": "", "content_type": "", "length": 40},
+        {"path": "config.php.bak", "url": "http://h/config.php.bak", "status": 200,
+         "category": "secrets", "sev": Severity.HIGH, "title": "",
+         "location": "", "content_type": "", "length": 80},
+    ]
     fs = make_findings("h:80", hits, source="feroxbuster")
-    assert any(".env" in f.title for f in fs)
+    sec = [f for f in fs if f.category == "content-secrets"]
+    # two secret paths on one host -> ONE grouped finding, both listed in evidence
+    assert len(sec) == 1
+    assert ".env" in sec[0].evidence and "config.php.bak" in sec[0].evidence
+    assert sec[0].severity == Severity.HIGH
+
+
+def test_404_high_value_path_produces_no_finding():
+    from ..content_discovery import make_findings
+    hits = [{"path": "login/.well-known/assetlinks.json",
+             "url": "http://h/login/.well-known/assetlinks.json", "status": 404,
+             "category": "auth", "sev": Severity.MEDIUM, "title": "",
+             "location": "", "content_type": "", "length": 20}]
+    fs = make_findings("h:80", hits, source="feroxbuster")
+    assert fs == []                    # a 404 is not reachable -> no finding
 
 
 def test_sni_connection_pins_ip_but_sends_vhost_sni():

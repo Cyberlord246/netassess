@@ -37,11 +37,10 @@ from .scope import ScopeEngine
 _TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.I | re.S)
 _MAX_BODY = 16384
 
-# Status codes that indicate a path is present/interesting. 404 is included
-# because a resource can exist yet answer 404 (custom handlers / soft-404s); the
-# generic not-found page is filtered out by comparing against a 404 baseline, so
-# only *distinct* 404s survive (see _baseline / the worker length check).
-_PRESENT = {200, 201, 204, 301, 302, 307, 308, 401, 403, 404, 405}
+# Status codes that indicate a path is present/interesting. 404 is deliberately
+# EXCLUDED — "not found" is not a reachable resource, and reporting 404s (even
+# "distinct" ones) produces misleading findings like "endpoint reachable (404)".
+_PRESENT = {200, 201, 204, 301, 302, 307, 308, 401, 403, 405}
 
 # Curated path list. (path, category, base_severity_if_found)
 # Severities: secrets/backup = high, admin/api/debug = medium, info files = info.
@@ -403,11 +402,6 @@ class ContentDiscovery:
                     continue
                 if soft404 and status == 200 and abs(length - base_len) < 64:
                     continue
-                # 404s are kept only when they differ from the server's generic
-                # not-found page (a real resource that answers 404), so the flood
-                # of identical 404s is suppressed while distinct ones surface.
-                if status == 404 and base_404_len and abs(length - base_404_len) < 64:
-                    continue
                 title = ""
                 m = _TITLE_RE.search(body.decode("utf-8", "replace"))
                 if m:
@@ -492,6 +486,43 @@ def make_path_finding(asset: str, path: str, url: str, status: int,
     )
 
 
+def _category_finding(asset: str, source: str, category: str,
+                      hits: list[dict]) -> Finding:
+    """One finding for all high-value paths of a category on a host (e.g. every
+    auth path -> a single 'Authentication endpoint reachable' with the list in
+    evidence). Stable title so the report also aggregates it across hosts."""
+    order = [Severity.INFO, Severity.LOW, Severity.MEDIUM, Severity.HIGH,
+             Severity.CRITICAL]
+
+    def _eff(h):
+        sev = h.get("sev", Severity.LOW)
+        return _downgrade(sev) if h.get("status") in (401, 403) else sev
+
+    hits = sorted(hits, key=lambda x: x.get("path", ""))
+    eff_sev = max((_eff(h) for h in hits), key=lambda s: order.index(s))
+    any_200 = any(h.get("status") == 200 for h in hits)
+    items = []
+    for h in hits[:20]:
+        u = h.get("url") or ("/" + h.get("path", "").lstrip("/"))
+        items.append(f"{u} (HTTP {h.get('status')})")
+    shown = "; ".join(items) + (f"; +{len(hits) - 20} more" if len(hits) > 20 else "")
+    base_title = _CAT_TITLES.get(category, "Path reachable")
+    return Finding(
+        title=base_title,
+        asset=asset,
+        evidence=f"{len(hits)} path(s): {shown}"[:1800],
+        description=f"Content discovery found {len(hits)} `{category}` path(s) "
+                    "on this web service.",
+        why_it_matters=_why(category),
+        severity=eff_sev,
+        confidence=Confidence.HIGH if any_200 else Confidence.MEDIUM,
+        impact=_impact(category),
+        remediation=_remediation(category),
+        validation=ValidationState.CONFIRMED if any_200 else ValidationState.OBSERVED,
+        source=source, category=f"content-{category}",
+    )
+
+
 # low-signal categories: collapsed/grouped instead of one finding per path.
 # High-value categories (secrets/config/admin/api/...) stay individual.
 GROUPED_CATEGORIES = {"common", "dir", "info", "info-leak", "custom"}
@@ -571,14 +602,18 @@ def make_findings(asset: str, hits: list[dict], source: str = "content-discovery
 
     findings: list[Finding] = []
     hits = [h for h in hits if not _is_static(h)]      # (3) filter static
+    hits = [h for h in hits if h.get("status") != 404]  # 404 == not reachable
     high = [h for h in hits if h["category"] not in GROUPED_CATEGORIES]
     generic = [h for h in hits if h["category"] in GROUPED_CATEGORIES]
 
-    # high-value paths -> individual findings (unchanged)
+    # high-value paths -> ONE finding per category per host (not per path), so a
+    # host with many auth/admin/api paths yields a single grouped title that
+    # also aggregates cleanly across hosts in the report.
+    by_cat: dict = defaultdict(list)
     for h in high:
-        findings.append(make_path_finding(
-            asset, h["path"], h["url"], h["status"], h["category"],
-            h.get("sev", Severity.LOW), h.get("title", ""), source))
+        by_cat[h["category"]].append(h)
+    for cat, grp in sorted(by_cat.items()):
+        findings.append(_category_finding(asset, source, cat, grp))
 
     redirects = [h for h in generic if 300 <= h["status"] < 400]
     ok = [h for h in generic if h["status"] == 200]
