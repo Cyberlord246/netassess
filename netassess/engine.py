@@ -784,17 +784,27 @@ class AssessmentEngine:
         return findings
 
     def _ferox_extensions(self, svc) -> str:
-        """Merge the operator's --content-extensions with extensions derived from
-        the service's detected technology (PHP->php, ASP.NET->aspx, ...), so
-        content discovery probes the right file types per target."""
-        from .techdetect import extensions_for_service
-        exts = [e for e in (self.config.content_extensions or "").replace(" ", "").split(",") if e]
-        for e in extensions_for_service(svc):
-            if e not in exts:
-                exts.append(e)
-        if extensions_for_service(svc):
+        """Pick content-discovery extensions for this service:
+          * the operator's --content-extensions always apply;
+          * if a technology is identified, add its extensions (PHP->php, ...);
+          * if NOTHING is identified and no explicit set was given, fall back to
+            a basic common set so files are still probed with the wordlist."""
+        from .techdetect import extensions_for_service, BASIC_EXTENSIONS
+        user = [e for e in (self.config.content_extensions or "").replace(" ", "").split(",") if e]
+        tech = extensions_for_service(svc)
+        if tech:
+            exts = list(user)
+            for e in tech:
+                if e not in exts:
+                    exts.append(e)
             self._log(f"[content] {svc.ip}:{svc.port}: tech-aware extensions -> "
                       f"{','.join(exts)}")
+        elif user:
+            exts = user
+        else:
+            exts = list(BASIC_EXTENSIONS)
+            self._log(f"[content] {svc.ip}:{svc.port}: no technology identified "
+                      f"-> basic extensions {','.join(exts)}")
         return ",".join(exts)
 
     def _phase_vhost(self):

@@ -95,6 +95,12 @@ _TECH_EXT = [
 ]
 
 
+# fallback extensions when no technology is identified — common web/script and
+# backup/config types worth probing regardless of stack.
+BASIC_EXTENSIONS = ["php", "asp", "aspx", "jsp", "html", "txt", "json",
+                    "bak", "old", "zip", "tar.gz", "sql", "conf", "config"]
+
+
 def extensions_for_service(svc: HTTPService) -> list[str]:
     """Extensions to probe for this service, derived from its identified
     technologies/server/language. Empty when nothing identifiable."""

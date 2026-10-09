@@ -74,6 +74,31 @@ def test_extensions_from_detected_tech():
     assert extensions_for_service(svc4) == []
 
 
+def test_ferox_extensions_tech_user_and_basic_fallback():
+    from ..config import Config
+    from ..engine import AssessmentEngine
+    from ..models import Port, PortState, Service
+
+    def _svc(ip="10.0.0.5", techs=()):
+        s = HTTPService(url=f"http://{ip}/", ip=ip, port=80, scheme="http")
+        s.technologies = [Technology(name=t, category="") for t in techs]
+        return s
+
+    # tech identified -> tech extensions merged with the user's
+    eng = AssessmentEngine(Config(targets=["10.0.0.5"], content_extensions="bak",
+                                  show_progress=False))
+    out = eng._ferox_extensions(_svc(techs=["PHP"])).split(",")
+    assert "bak" in out and "php" in out
+
+    # no tech, explicit user set -> exactly the user's
+    assert eng._ferox_extensions(_svc()).split(",") == ["bak"]
+
+    # no tech and no user set -> basic fallback
+    eng2 = AssessmentEngine(Config(targets=["10.0.0.5"], show_progress=False))
+    from ..techdetect import BASIC_EXTENSIONS
+    assert eng2._ferox_extensions(_svc()).split(",") == BASIC_EXTENSIONS
+
+
 def _run_all():
     fns = [v for k, v in globals().items() if k.startswith("test_")]
     for fn in fns:
