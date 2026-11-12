@@ -541,11 +541,21 @@ class SMBProbe(ServiceProbe):
         return ProbeResult(data={"smb": info}, findings=findings)
 
 
+def _mongo_listdb_query() -> bytes:
+    """Legacy OP_QUERY for the admin command {listDatabases:1}. Unauthenticated
+    reads succeed on open instances; auth-required ones return an error doc."""
+    elem = b"\x10" + b"listDatabases" + b"\x00" + struct.pack("<i", 1)
+    doc = struct.pack("<i", 4 + len(elem) + 1) + elem + b"\x00"
+    body = (struct.pack("<i", 0) + b"admin.$cmd\x00" + struct.pack("<i", 0)
+            + struct.pack("<i", -1) + doc)
+    return struct.pack("<iiii", 16 + len(body), 1, 0, 2004) + body    # opCode OP_QUERY
+
+
 class DatabaseProbe(ServiceProbe):
     name = "database"
     _DB_PORTS = {3306: "mysql", 5432: "postgresql", 6379: "redis",
                  27017: "mongodb", 1433: "mssql", 11211: "memcached",
-                 9200: "elasticsearch"}
+                 9200: "elasticsearch", 5984: "couchdb"}
 
     def matches(self, port: Port) -> bool:
         return port.number in self._DB_PORTS or port.service.name in self._DB_PORTS.values()
@@ -605,21 +615,110 @@ class DatabaseProbe(ServiceProbe):
                 remediation="Bind to internal interfaces, require strong auth, firewall the port. Do not expose publicly.",
                 validation=ValidationState.OBSERVED, source="database-probe", category="exposure",
             ))
-        # Elasticsearch: safe GET / (delegated to HTTP probe usually) — mark exposure.
-        elif product in ("mongodb", "mssql", "postgresql", "memcached"):
+        # Deep, read-only, unauthenticated exposure checks (never credentials).
+        elif product == "mongodb":
+            findings.append(self._mongo_check(host, port, info))
+        elif product == "memcached":
+            findings.append(self._memcached_check(host, port, info))
+        elif product == "elasticsearch":
+            findings.append(self._http_db_check(
+                host, port, info, "elasticsearch", "/_cat/indices?v",
+                ("green", "yellow", "red", "health", "docs.count"), "index listing"))
+        elif product == "couchdb":
+            findings.append(self._http_db_check(
+                host, port, info, "couchdb", "/_all_dbs",
+                ("_users", "_replicator", "["), "database listing"))
+        elif product in ("mssql", "postgresql"):
             port.service.name = product
-            findings.append(Finding(
-                title=f"Database service exposed: {product}", asset=f"{host.ip}:{port.number}",
-                evidence=f"open port {port.number}",
-                description=f"A {product} database service is listening.",
-                why_it_matters="Database ports reachable from untrusted networks are high-value targets.",
-                severity=Severity.MEDIUM, confidence=Confidence.MEDIUM,
-                impact="Potential data exposure if authentication/network controls are weak.",
-                remediation="Bind to internal interfaces, require strong auth, firewall the port. Do not expose publicly.",
-                validation=ValidationState.OBSERVED, source="database-probe", category="exposure",
-            ))
+            findings.append(self._exposure_finding(host, port, product))
         # NOTE: we deliberately never attempt credential guessing on databases.
         return ProbeResult(data={"database": info}, findings=findings)
+
+    # -- deep per-product helpers (all read-only, no auth, no writes) ------ #
+    def _exposure_finding(self, host, port, product, *, sev=Severity.MEDIUM,
+                          val=ValidationState.OBSERVED) -> Finding:
+        return Finding(
+            title=f"Database service exposed: {product}",
+            asset=f"{host.ip}:{port.number}", evidence=f"open port {port.number}",
+            description=f"A {product} database service is listening.",
+            why_it_matters="Database ports reachable from untrusted networks are "
+                           "high-value targets.",
+            severity=sev, confidence=Confidence.MEDIUM,
+            impact="Potential data exposure if authentication/network controls "
+                   "are weak.",
+            remediation="Bind to internal interfaces, require strong auth, "
+                        "firewall the port. Do not expose publicly.",
+            validation=val, source="database-probe", category="exposure")
+
+    def _unauth_finding(self, host, port, product, what, evidence) -> Finding:
+        return Finding(
+            title=f"Unauthenticated {product} instance",
+            asset=f"{host.ip}:{port.number}", evidence=evidence,
+            description=f"{product} returned {what} without authentication.",
+            why_it_matters="An open datastore exposes (and often lets an attacker "
+                           "modify) all stored data; several allow RCE.",
+            severity=Severity.HIGH, confidence=Confidence.HIGH,
+            impact="Full unauthenticated read (often write) of stored data.",
+            remediation="Require authentication, bind to localhost/trusted nets, "
+                        "and firewall the port.",
+            validation=ValidationState.CONFIRMED, source="database-probe",
+            category="exposure")
+
+    def _mongo_check(self, host, port, info) -> Finding:
+        port.service.name = "mongodb"
+        data, _ = _recv_banner(self.scope, self.config, host.ip, port.number,
+                               send=_mongo_listdb_query(), read=4096)
+        if not data:
+            return self._exposure_finding(host, port, "mongodb")
+        low = data.lower()
+        if b"databases" in low and not any(x in low for x in (
+                b"requires auth", b"not authorized", b"unauthorized", b"errmsg")):
+            info["unauthenticated"] = True
+            return self._unauth_finding(host, port, "MongoDB", "a database listing",
+                                        "OP_QUERY listDatabases returned a database "
+                                        "list without authentication")
+        info["unauthenticated"] = False
+        return self._exposure_finding(host, port, "mongodb")  # present, auth required
+
+    def _memcached_check(self, host, port, info) -> Finding:
+        port.service.name = "memcached"
+        data, _ = _recv_banner(self.scope, self.config, host.ip, port.number,
+                               send=b"stats\r\n", read=2048)
+        if data and b"STAT " in data:
+            ver = ""
+            for line in data.decode("latin-1", "replace").splitlines():
+                if line.startswith("STAT version"):
+                    ver = line.split(" ", 2)[-1].strip()
+            info["unauthenticated"] = True
+            info["version"] = ver
+            if ver:
+                port.service.version = ver
+                port.service.confidence = Confidence.HIGH
+            return self._unauth_finding(
+                host, port, "Memcached", "server statistics",
+                f"stats returned server data without auth"
+                + (f" (version {ver})" if ver else ""))
+        return self._exposure_finding(host, port, "memcached")
+
+    def _http_db_check(self, host, port, info, product, path, markers, what
+                       ) -> Finding:
+        from ..webfetch import fetch
+        port.service.name = product
+        for scheme in ("http", "https"):
+            st, _h, body = fetch(host.ip, port.number, scheme, path,
+                                 timeout=self.config.timeout)
+            if st is None:
+                continue
+            if st == 200 and any(m in body for m in markers):
+                info["unauthenticated"] = True
+                return self._unauth_finding(
+                    host, port, product, f"a {what}",
+                    f"GET {path} -> HTTP 200 exposing the {what} without auth")
+            if st in (401, 403):
+                info["unauthenticated"] = False
+                return self._exposure_finding(host, port, product)
+            break
+        return self._exposure_finding(host, port, product)
 
 
 class GenericProbe(ServiceProbe):
