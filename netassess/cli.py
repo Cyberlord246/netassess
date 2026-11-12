@@ -148,6 +148,10 @@ def _build_config(args) -> Config:
         cfg.crawl_depth = args.crawl_depth
     if getattr(args, "crawl_max_pages", None) is not None:
         cfg.crawl_max_pages = args.crawl_max_pages
+    if getattr(args, "render", False):
+        cfg.render = True
+    if getattr(args, "render_timeout", None) is not None:
+        cfg.render_timeout = args.render_timeout
     if getattr(args, "auth_config", None):
         cfg.auth_config = args.auth_config
         cfg.validation_credentialed = True
@@ -665,6 +669,14 @@ def _add_scan_args(sp: argparse.ArgumentParser):
                     help="crawl link-follow depth (default 2)")
     sp.add_argument("--crawl-max-pages", dest="crawl_max_pages", type=int,
                     help="max pages fetched per service while crawling (default 40)")
+    sp.add_argument("--render", action="store_true",
+                    help="render each web root in headless Chromium (Playwright) to "
+                         "analyse JS/SPA pages: captures the post-JS DOM, runtime "
+                         "network endpoints and script/JSON bodies for the secret "
+                         "scan (read-only: navigate + observe, no clicks/forms). "
+                         "Needs: pip install playwright && playwright install chromium")
+    sp.add_argument("--render-timeout", dest="render_timeout", type=float,
+                    help="per-page render navigation/settle timeout in seconds (default 15)")
     sp.add_argument("--no-validate", dest="no_validate", action="store_true",
                     help="disable the validation layer (it runs by default: safe, "
                          "non-destructive assessment of candidate findings)")

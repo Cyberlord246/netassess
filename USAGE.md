@@ -125,6 +125,8 @@ The scan banner prints the active profile and exactly which options it enabled.
 | `--crawl` | bounded same-host web crawl from each web root (GET-only), feeding many more pages + JS into endpoint and **secret** analysis. On automatically in `--profile deep`/`web`. |
 | `--crawl-depth N` | crawl link-follow depth (default 2). |
 | `--crawl-max-pages N` | max pages fetched per service while crawling (default 40). |
+| `--render` | render each web root in headless Chromium (Playwright) to analyse **dynamic JS/SPA pages**: captures the post-JavaScript DOM, the runtime network endpoints (XHR/fetch the static parser can't see), and runtime-loaded JS/JSON bodies — all fed into tech detection and the **secret** scan. Read-only: navigate + observe, no clicks/forms/downloads. Needs `pip install playwright && playwright install chromium`; logged-and-skipped if unavailable. |
+| `--render-timeout N` | per-page render navigation/settle timeout in seconds (default 15). |
 
 ### Vulnerability intel & validation
 | Option | Meaning |

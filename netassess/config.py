@@ -156,6 +156,10 @@ class Config:
     crawl_depth: int = 2              # link-follow depth
     crawl_max_pages: int = 40         # hard cap on pages fetched per service
 
+    # --- headless-browser rendering of dynamic (JS/SPA) pages (opt-in) ---
+    render: bool = False              # render each web root with Playwright/Chromium
+    render_timeout: float = 15.0      # per-page navigation/settle timeout (seconds)
+
     def effective_ports(self) -> list[int]:
         if self.full_port_scan:
             base = list(range(1, 65536))

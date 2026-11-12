@@ -1005,33 +1005,97 @@ class AssessmentEngine:
         total_eps = 0
         added = 0
         secrets = 0
-        for idx, (host, svc) in enumerate(services, 1):
-            try:
-                eps = self.endpoints.analyze_service(host, svc)
-                total_eps += len(eps)
-                if eps:
-                    self._log(f"[endpoint/js] {svc.ip}:{svc.port} -> "
-                              f"{len(eps)} endpoint(s)/JS ref(s)")
-                f = self.endpoints.finding_for(svc, eps)
-                if f is not None:
-                    before = len(host.findings)
-                    host.add_finding(f)
-                    if len(host.findings) > before:
-                        added += 1
-                # scan the root body + referenced JS files for leaked secrets
-                for sf in self.endpoints.scan_js_secrets(host, svc):
-                    before = len(host.findings)
-                    host.add_finding(sf)
-                    if len(host.findings) > before:
-                        secrets += 1
-                        self._log(f"[endpoint/js] {svc.ip}:{svc.port} -> SECRET: "
-                                  f"{sf.title}")
-            except Exception as exc:
-                host.notes.append(f"endpoint analysis error on {svc.port}: {exc}")
-            self.progress.items(idx, total, "web services")
+
+        # optional headless-browser rendering of dynamic (JS/SPA) pages
+        render = self._open_renderer()
+        rendered = 0
+
+        try:
+            for idx, (host, svc) in enumerate(services, 1):
+                try:
+                    eps = self.endpoints.analyze_service(host, svc)
+                    total_eps += len(eps)
+                    if eps:
+                        self._log(f"[endpoint/js] {svc.ip}:{svc.port} -> "
+                                  f"{len(eps)} endpoint(s)/JS ref(s)")
+                    f = self.endpoints.finding_for(svc, eps)
+                    if f is not None:
+                        before = len(host.findings)
+                        host.add_finding(f)
+                        if len(host.findings) > before:
+                            added += 1
+                    # scan the root body + referenced JS files for leaked secrets
+                    for sf in self.endpoints.scan_js_secrets(host, svc):
+                        before = len(host.findings)
+                        host.add_finding(sf)
+                        if len(host.findings) > before:
+                            secrets += 1
+                            self._log(f"[endpoint/js] {svc.ip}:{svc.port} -> SECRET: "
+                                      f"{sf.title}")
+                    # headless render: JS/SPA DOM + runtime network + runtime secrets
+                    if render is not None:
+                        secrets += self._render_service(render, host, svc)
+                        rendered += 1
+                except Exception as exc:
+                    host.notes.append(f"endpoint analysis error on {svc.port}: {exc}")
+                self.progress.items(idx, total, "web services")
+        finally:
+            if render is not None:
+                render.close()
+
+        extra = f"; {rendered} rendered in headless browser" if rendered else ""
         self._log(f"[endpoint/js] {total_eps} endpoint(s)/JS reference(s) across "
                   f"{total} service(s); {added} finding(s) added; "
-                  f"{secrets} secret finding(s)")
+                  f"{secrets} secret finding(s){extra}")
+
+    def _open_renderer(self):
+        """Create and launch the Playwright renderer if --render is set and it is
+        usable; otherwise log the reason and return None (rendering is skipped,
+        the rest of the phase is unaffected)."""
+        if not getattr(self.config, "render", False):
+            return None
+        from .adapters.browser_render import BrowserRenderAdapter
+        if not BrowserRenderAdapter.available():
+            self._log("[render] --render set but Playwright is not installed — "
+                      "skipping. Install: pip install playwright && "
+                      "playwright install chromium")
+            return None
+        render = BrowserRenderAdapter(
+            nav_timeout=float(getattr(self.config, "render_timeout", 15.0)))
+        err = render.open()
+        if err:
+            self._log(f"[render] headless rendering unavailable — {err}")
+            return None
+        self._tool("render", "playwright",
+                   cmd="headless chromium: navigate + wait networkidle + read "
+                       "DOM/network (read-only)",
+                   module="adapters.browser_render.BrowserRenderAdapter")
+        return render
+
+    def _render_service(self, render, host, svc) -> int:
+        """Render one web root and fold the result into the service. Returns the
+        number of NEW secret findings added from the rendered content."""
+        from urllib.parse import urlparse
+        if not self.scope.authorize(svc.ip, svc.port).allowed:
+            return 0
+        parsed = urlparse(svc.url)
+        host_header = (parsed.hostname if (parsed.hostname and
+                       parsed.hostname != svc.ip) else None)
+        rr = render.render(svc.url, svc.ip, svc.port, host_header=host_header)
+        self._log(f"[render] {svc.ip}:{svc.port} -> DOM {len(rr.dom)}B, "
+                  f"{len(rr.endpoints)} runtime endpoint(s), "
+                  f"{len(rr.bodies)} body(ies) captured")
+        if rr.error:
+            self._log(f"[render] {svc.ip}:{svc.port} note: {rr.error}")
+        new_secrets = 0
+        for sf in self.endpoints.ingest_rendered(host, svc, rr):
+            before = len(host.findings)
+            host.add_finding(sf)
+            if len(host.findings) > before:
+                new_secrets += 1
+                self._log(f"[render] {svc.ip}:{svc.port} -> SECRET (rendered): "
+                          f"{sf.title}")
+        return new_secrets
 
     def _phase_nuclei(self):
         if self.nuclei is None:

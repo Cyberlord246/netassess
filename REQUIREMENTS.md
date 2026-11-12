@@ -23,6 +23,7 @@ deeper. If one is missing, netassess falls back to its built-in equivalent — t
 | **feroxbuster** | content/directory discovery (`--content-discovery`, tech-aware `-x`) | built-in GET probe |
 | **nuclei** (ProjectDiscovery) | template checks (`--nuclei`) | **skipped** (no fallback) |
 | **whatweb** *or* **wappalyzer** | richer technology fingerprinting (`--tech-tool`) | built-in signature detection |
+| **Playwright + Chromium** (Python) | render dynamic JS/SPA pages (`--render`): post-JS DOM, runtime network endpoints, runtime-loaded JS/JSON for the secret scan | static GET + referenced-JS scan only (JS/SPA runtime content not seen) |
 | **ssh** (OpenSSH client) | opt-in credentialed, read-only validation (`--auth-config`) | validation stays non-credentialed |
 
 ### Install the external tools
@@ -40,6 +41,15 @@ go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
 ```bash
 brew install nmap feroxbuster whatweb httpx nuclei
 ```
+
+**Headless rendering of dynamic pages (`--render`, optional)**
+```bash
+pip install playwright
+playwright install chromium        # one-time browser download (~150 MB)
+```
+Read-only: netassess navigates each in-scope web root and passively observes the
+rendered DOM and network — it never clicks, submits forms, or downloads. If the
+package or browser is missing, `--render` logs the reason and is skipped.
 
 **Windows**
 - `nmap`: https://nmap.org/download.html

@@ -202,6 +202,41 @@ class EndpointAnalyzer:
                 hits += scan_text(body, f"{base}{path if path.startswith('/') else '/' + path}")
         return findings_for(f"{svc.ip}:{svc.port}", hits)
 
+    def ingest_rendered(self, host, svc, rendered) -> list:
+        """Fold a headless-render result into the service and return any secret
+        findings from the rendered DOM + captured runtime bodies.
+
+        Merges runtime network endpoints into ``svc.endpoints``, runs body-based
+        technology detection over the post-JS DOM (catches SPA frameworks the
+        static body hid), and scans the DOM + same-host script/JSON bodies for
+        leaked secrets using the same high-precision scanner as the static path.
+        """
+        from .secrets import scan_text, findings_for
+        from .techdetect import detect_technologies
+
+        # 1) runtime endpoints the static parser could never see
+        existing = set(svc.endpoints or [])
+        svc.endpoints = svc.endpoints or []
+        for e in (rendered.endpoints or []):
+            if e not in existing:
+                svc.endpoints.append(e)
+                existing.add(e)
+
+        # 2) technologies now visible in the rendered DOM
+        known = {t.name for t in (svc.technologies or [])}
+        for t in detect_technologies(svc, body=rendered.dom or ""):
+            if t.name not in known:
+                svc.technologies.append(t)
+                known.add(t.name)
+
+        # 3) secrets in the rendered DOM + captured runtime bodies
+        hits: list[dict] = []
+        if rendered.dom:
+            hits += scan_text(rendered.dom, rendered.url)
+        for url, text in (rendered.bodies or []):
+            hits += scan_text(text, url)
+        return findings_for(f"{svc.ip}:{svc.port}", hits)
+
     def _extract(self, body: str, svc, parsed) -> list[str]:
         base = f"{svc.scheme}://{parsed.hostname or svc.ip}:{svc.port}/"
         found: list[str] = []
