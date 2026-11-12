@@ -95,11 +95,12 @@ _TECH_EXT = [
 ]
 
 
-# fallback extensions when no technology is identified. Kept LEAN on purpose:
-# feroxbuster requests one extra URL per extension per word, so every added
-# extension multiplies the scan. These are the highest-signal server-side and
-# backup/leak types; override with --content-extensions for a specific stack.
-BASIC_EXTENSIONS = ["php", "aspx", "jsp", "txt", "bak", "old", "zip"]
+# fallback extensions when no technology is identified. Deliberately a SINGLE
+# extension: feroxbuster requests one extra URL per extension per word, so each
+# added extension multiplies the whole scan. With no technology signal there is
+# nothing to justify guessing server-side stacks, so we probe plain directories
+# plus one generic page type. Override with --content-extensions for a known stack.
+BASIC_EXTENSIONS = ["html"]
 
 
 def extensions_for_service(svc: HTTPService) -> list[str]:
