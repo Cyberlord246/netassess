@@ -127,6 +127,8 @@ def _build_config(args) -> Config:
         cfg.cve_db = args.cve_db
     if getattr(args, "no_smtp_relay_test", False):
         cfg.smtp_relay_test = False
+    if getattr(args, "no_smb_enum", False):
+        cfg.smb_enum = False
     if getattr(args, "udp", False):
         cfg.udp_scan = True
     udp_ports = _parse_ports(getattr(args, "udp_ports", None))
@@ -640,6 +642,9 @@ def _add_scan_args(sp: argparse.ArgumentParser):
                     action="store_true",
                     help="disable the SMTP open-relay test (it runs by default; "
                          "non-destructive — aborts before DATA, no mail is sent)")
+    sp.add_argument("--no-smb-enum", dest="no_smb_enum", action="store_true",
+                    help="disable SMB null-session share enumeration (runs by "
+                         "default via smbclient/nmap if installed; read-only)")
     sp.add_argument("--udp", action="store_true",
                     help="also scan common UDP ports (DNS/SNMP/NTP/NetBIOS/…) "
                          "with protocol-aware probes")

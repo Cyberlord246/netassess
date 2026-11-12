@@ -77,6 +77,9 @@ class Config:
     # --- smtp -------------------------------------------------------------
     smtp_relay_test: bool = True      # test SMTP open relay (non-destructive; aborts before DATA)
 
+    # --- smb --------------------------------------------------------------
+    smb_enum: bool = True             # null-session share enumeration (smbclient/nmap, if installed)
+
     # --- udp --------------------------------------------------------------
     udp_scan: bool = False            # scan common UDP ports (opt-in)
     udp_ports: list[int] = field(

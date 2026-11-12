@@ -79,6 +79,7 @@ class AssessmentEngine:
         self.deflogin = DefaultLoginChecker(config, self.scope)
         self.endpoints = EndpointAnalyzer(config, self.scope)
         self.nmap_nse = self._build_nmap_nse(config)
+        self.smb_enum = self._build_smb_enum(config)
         self.orch = Orchestrator(config)
         self._log = log or (lambda *a, **k: None)
         self.progress = Progress(enabled=getattr(config, "show_progress", True))
@@ -94,6 +95,13 @@ class AssessmentEngine:
             return None
         from .adapters.nmap_nse import NmapNSEAdapter
         return NmapNSEAdapter()
+
+    def _build_smb_enum(self, config: Config):
+        if not getattr(config, "smb_enum", True):
+            return None
+        from .adapters.smb_enum import SmbEnumAdapter
+        a = SmbEnumAdapter()
+        return a if a.available() else None
 
     def _build_ferox(self, config: Config):
         if not config.content_discovery or config.content_tool == "builtin":
@@ -154,6 +162,8 @@ class AssessmentEngine:
              "disabled (--no-vhosts)"),
             ("Technology fingerprinting",  self._phase_tech,       getattr(self.config, "tech_tool", "auto") != "builtin", self._sum_tech,
              "external tools off (--tech-tool builtin)"),
+            ("SMB enumeration",           self._phase_smb_enum,   self.smb_enum is not None, None,
+             "no smbclient/nmap, or --no-smb-enum"),
             ("Default-login exposure",    self._phase_default_login, True, self._sum_deflogin, ""),
             ("Web content discovery",     self._phase_content,    self.content is not None, self._sum_content,
              "not requested (enable with --content-discovery)"),
@@ -925,6 +935,39 @@ class AssessmentEngine:
                     added += 1
         self._log(f"[tech] {name}: {added} technology match(es) merged across "
                   f"{len(urls)} service(s)")
+
+    def _phase_smb_enum(self):
+        if self.smb_enum is None:
+            return
+        targets = []
+        for host in self.graph.hosts.values():
+            for p in host.open_ports():
+                if p.number in (139, 445) or p.service.name in (
+                        "smb", "microsoft-ds", "netbios-ssn"):
+                    if self.scope.authorize(host.ip, p.number).allowed:
+                        targets.append((host, p.number))
+                    break
+        if not targets:
+            self._log("[smb-enum] no SMB hosts to enumerate")
+            return
+        self._tool("smb-enum", "smbclient/nmap",
+                   cmd=f"null-session share enum ({len(targets)} host(s))")
+        added = 0
+        total = len(targets)
+        for idx, (host, pnum) in enumerate(targets, 1):
+            try:
+                result = self.smb_enum.enumerate_host(
+                    host.ip, timeout=int(self.config.timeout) + 15)
+                for f in self.smb_enum.to_findings(host.ip, pnum, result):
+                    before = len(host.findings)
+                    host.add_finding(f)
+                    if len(host.findings) > before:
+                        added += 1
+                        self._log(f"[smb-enum] {host.ip}: {f.title}")
+            except Exception as exc:
+                host.notes.append(f"smb-enum error: {exc}")
+            self.progress.items(idx, total, "SMB hosts")
+        self._log(f"[smb-enum] {added} finding(s) across {total} SMB host(s)")
 
     def _phase_default_login(self):
         services = self.graph.all_http_services()
