@@ -373,6 +373,29 @@ class SMTPProbe(ServiceProbe):
         return self._readline(sock)
 
 
+def _dns_qname(name: str) -> bytes:
+    out = b""
+    for lbl in name.rstrip(".").split("."):
+        if lbl:
+            enc = lbl.encode("latin-1", "ignore")[:63]
+            out += bytes([len(enc)]) + enc
+    return out + b"\x00"
+
+
+def dns_query(qname: str, qtype: int, *, rd: bool = True, tid: int = 0x1337) -> bytes:
+    flags = 0x0100 if rd else 0x0000            # RD bit
+    header = struct.pack("!HHHHHH", tid, flags, 1, 0, 0, 0)
+    return header + _dns_qname(qname) + struct.pack("!HH", qtype, 1)  # class IN
+
+
+def _reverse_zone(ip: str) -> str:
+    """The /24 reverse zone for an IPv4 address (a.b.c.d -> c.b.a.in-addr.arpa)."""
+    parts = ip.split(".")
+    if len(parts) == 4 and all(p.isdigit() for p in parts):
+        return f"{parts[2]}.{parts[1]}.{parts[0]}.in-addr.arpa"
+    return ""
+
+
 class DNSProbe(ServiceProbe):
     name = "dns"
 
@@ -380,11 +403,12 @@ class DNSProbe(ServiceProbe):
         return port.service.name == "dns" or port.number == 53
 
     def probe(self, host: Host, port: Port) -> ProbeResult:
-        # Safe CH TXT version.bind query over TCP (read-only identification).
-        query = self._build_version_query()
-        framed = struct.pack("!H", len(query)) + query
-        data, err = _recv_banner(self.scope, self.config, host.ip, port.number,
-                                 send=framed, read=512)
+        ip, num = host.ip, port.number
+        # 1) version.bind (CH TXT over TCP) — read-only identification
+        framed = struct.pack("!H", len(self._build_version_query())) \
+            + self._build_version_query()
+        data, _ = _recv_banner(self.scope, self.config, ip, num,
+                               send=framed, read=512)
         info = {"tcp_dns": data is not None}
         version = ""
         if data and len(data) > 2:
@@ -397,7 +421,98 @@ class DNSProbe(ServiceProbe):
             port.service.product = version
             port.service.confidence = Confidence.HIGH
         port.service.name = "dns"
-        return ProbeResult(data={"dns": info})
+        findings = []
+
+        # 2) open recursion / open resolver — recursive query for an external name
+        if self._recursion_open(ip, num):
+            info["open_recursion"] = True
+            findings.append(Finding(
+                title="DNS open recursion (open resolver)",
+                asset=f"{ip}:{num}",
+                evidence="recursive query for an external name (example.com) was "
+                         "answered with RA=1",
+                description="The DNS server recursively resolves names for "
+                            "arbitrary clients.",
+                why_it_matters="Open resolvers are abused for DNS amplification "
+                               "DDoS and cache-poisoning.",
+                severity=Severity.MEDIUM, confidence=Confidence.HIGH,
+                impact="Reflection/amplification DDoS participation; cache abuse.",
+                remediation="Disable recursion for untrusted clients (views/ACLs) "
+                            "or restrict to internal networks.",
+                validation=ValidationState.CONFIRMED, source="dns-probe",
+                category="misconfiguration"))
+
+        # 3) zone transfer (AXFR) on candidate zones derived from names/reverse zone
+        for zone in self._candidate_zones(host):
+            n = self._axfr_records(ip, num, zone)
+            if n >= 2:                           # SOA + >=1 record == transfer ok
+                info.setdefault("axfr", []).append({"zone": zone, "records": n})
+                findings.append(Finding(
+                    title="DNS zone transfer (AXFR) allowed",
+                    asset=f"{ip}:{num}",
+                    evidence=f"AXFR for '{zone}' returned {n} record(s)",
+                    description=f"The server allowed a full zone transfer of "
+                                f"'{zone}' to an unauthenticated client.",
+                    why_it_matters="AXFR dumps every record in the zone — internal "
+                                   "hostnames, IPs and infrastructure layout.",
+                    severity=Severity.HIGH, confidence=Confidence.HIGH,
+                    impact="Full internal DNS disclosure; maps the attack surface.",
+                    remediation="Restrict zone transfers to authorized secondaries "
+                                "(allow-transfer / TSIG).",
+                    validation=ValidationState.CONFIRMED, source="dns-probe",
+                    category="info-disclosure"))
+                break                            # one confirmed AXFR is enough
+        return ProbeResult(data={"dns": info}, findings=findings)
+
+    def _recursion_open(self, ip: str, port: int) -> bool:
+        payload = dns_query("example.com", 1, rd=True)   # A, recursion desired
+        with self.scope.slot(ip, port) as s:
+            if not s.allowed:
+                return False
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.settimeout(self.config.timeout)
+            try:
+                sock.sendto(payload, (ip, port))
+                resp = sock.recv(1024)
+            except OSError:
+                return False
+            finally:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+        if len(resp) < 8:
+            return False
+        flags = struct.unpack("!H", resp[2:4])[0]
+        ra = (flags >> 7) & 1
+        rcode = flags & 0xF
+        ancount = struct.unpack("!H", resp[6:8])[0]
+        return bool(ra) and rcode == 0 and ancount > 0   # recursed for an ext name
+
+    def _candidate_zones(self, host: Host) -> list[str]:
+        zones: list[str] = []
+        for hn in getattr(host, "hostnames", []) or []:
+            if "." in hn.rstrip("."):
+                parent = hn.rstrip(".").split(".", 1)[1]
+                if parent and parent not in zones:
+                    zones.append(parent)
+        rz = _reverse_zone(host.ip)
+        if rz:
+            zones.append(rz)
+        return zones[:4]
+
+    def _axfr_records(self, ip: str, port: int, zone: str) -> int:
+        payload = dns_query(zone, 252, rd=False)         # AXFR qtype=252
+        framed = struct.pack("!H", len(payload)) + payload
+        data, _ = _recv_banner(self.scope, self.config, ip, port,
+                               send=framed, read=8192)
+        if not data or len(data) < 14:
+            return 0
+        msg = data[2:]                                   # strip TCP length prefix
+        flags = struct.unpack("!H", msg[2:4])[0]
+        if (flags & 0xF) != 0:                            # RCODE != 0 (e.g. REFUSED)
+            return 0
+        return struct.unpack("!H", msg[6:8])[0]          # ANCOUNT
 
     def _build_version_query(self) -> bytes:
         # version.bind CH TXT
