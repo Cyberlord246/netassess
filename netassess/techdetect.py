@@ -95,10 +95,11 @@ _TECH_EXT = [
 ]
 
 
-# fallback extensions when no technology is identified — common web/script and
-# backup/config types worth probing regardless of stack.
-BASIC_EXTENSIONS = ["php", "asp", "aspx", "jsp", "html", "txt", "json",
-                    "bak", "old", "zip", "tar.gz", "sql", "conf", "config"]
+# fallback extensions when no technology is identified. Kept LEAN on purpose:
+# feroxbuster requests one extra URL per extension per word, so every added
+# extension multiplies the scan. These are the highest-signal server-side and
+# backup/leak types; override with --content-extensions for a specific stack.
+BASIC_EXTENSIONS = ["php", "aspx", "jsp", "txt", "bak", "old", "zip"]
 
 
 def extensions_for_service(svc: HTTPService) -> list[str]:
