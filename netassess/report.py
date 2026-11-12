@@ -250,14 +250,16 @@ class ReportGenerator:
                          + role + risk_str)
             for p in ports:
                 svc = p.service
-                extra = f" — {svc.product} {svc.version}".rstrip() if svc.product else ""
+                label = " ".join(x for x in (svc.product, svc.version) if x)
+                extra = f" — {label}" if label else ""
                 lines.append(f"- `{p.number}/{p.protocol}` → **{svc.name}**"
                              f"{extra}  _(confidence: {svc.confidence.value})_")
             for p in sorted(h.udp_ports.values(), key=lambda x: x.number):
                 if p.state.value not in ("open", "open|filtered"):
                     continue
                 svc = p.service
-                extra = f" — {svc.product}" if svc.product else ""
+                label = " ".join(x for x in (svc.product, svc.version) if x)
+                extra = f" — {label}" if label else ""
                 lines.append(f"- `{p.number}/udp` → **{svc.name}**{extra}  "
                              f"_({p.state.value})_")
         if len(lines) == 1:
@@ -269,14 +271,34 @@ class ReportGenerator:
                  "| Asset | Service | Product | Version | Confidence | Evidence |",
                  "|---|---|---|---|---|---|"]
         rows = 0
-        for h, p in self.graph.iter_open_ports():
-            svc = p.service
-            if svc.product or svc.version:
+        unversioned = 0
+
+        def cell(s) -> str:
+            return (str(s or "").replace("|", "\\|").replace("\n", " ").strip()
+                    or "—")
+
+        for ip in sorted(self.graph.hosts):
+            h = self.graph.hosts[ip]
+            ports = [(p, "tcp") for p in h.open_ports()]
+            ports += [(p, "udp") for p in sorted(h.udp_ports.values(),
+                                                 key=lambda x: x.number)
+                      if p.state.value in ("open", "open|filtered")]
+            for p, proto in ports:
+                svc = p.service
                 rows += 1
-                lines.append(f"| {h.ip}:{p.number} | {svc.name} | {svc.product} | "
-                             f"{svc.version} | {svc.confidence.value} | {svc.evidence or svc.banner[:40]} |")
+                if not svc.version:
+                    unversioned += 1
+                ev = svc.evidence or (svc.banner or "")[:60]
+                lines.append(f"| {h.ip}:{p.number}/{proto} | {cell(svc.name)} | "
+                             f"{cell(svc.product)} | {cell(svc.version)} | "
+                             f"{svc.confidence.value} | {cell(ev)} |")
         if not rows:
-            lines.append("| _(no version data collected)_ | | | | | |")
+            lines.append("| _(no open ports)_ | | | | | |")
+        elif unversioned:
+            lines.append(f"\n_{unversioned} port(s) show no version — the service "
+                         "did not disclose one to the safe probes. Install nmap "
+                         "(used automatically for -sV) or run with `--deep` "
+                         "(nmap version-intensity 5) for more._")
         return "\n".join(lines)
 
     def _http_section(self) -> str:

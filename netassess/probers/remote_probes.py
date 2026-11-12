@@ -18,6 +18,7 @@ import socket
 import struct
 
 from ..models import Confidence, Finding, Host, Port, Service, Severity, ValidationState
+from ..services import set_service_version
 from .base import ProbeResult, ServiceProbe
 
 
@@ -179,8 +180,11 @@ class VNCProbe(ServiceProbe):
                     pass
 
         port.service.name = "vnc"
-        port.service.product = f"RFB {version}"
-        port.service.confidence = Confidence.HIGH
+        # RFB is the protocol version, not the server software's; nmap -sV may
+        # already know the product (RealVNC/TightVNC/…) — keep it if so
+        set_service_version(port, "VNC", "",
+                            evidence=f"RFB protocol {version}",
+                            confidence=Confidence.HIGH)
         offered = [_VNC_SECTYPES.get(t, str(t)) for t in sectypes]
         findings = []
         if 1 in sectypes:  # None
@@ -271,8 +275,11 @@ class RsyncProbe(ServiceProbe):
                     pass
 
         port.service.name = "rsync"
-        port.service.product = version
-        port.service.confidence = Confidence.HIGH
+        # "@RSYNCD: 31.0" is the rsync *protocol* version, not the release
+        proto = version.split(":", 1)[-1].strip() if ":" in version else version
+        set_service_version(port, "rsync", "",
+                            evidence=f"rsync protocol {proto}",
+                            confidence=Confidence.HIGH)
         modules = parse_rsync_modules(listing.decode("latin-1", "replace"))
         findings = []
         if modules:

@@ -12,6 +12,7 @@ import ssl
 import struct
 
 from ..models import Confidence, Finding, Host, Port, Service, Severity, ValidationState
+from ..services import set_service_version, split_software
 from .base import ProbeResult, ServiceProbe
 
 # --- banner -> (product, version) extraction (feeds the CVE engine) --------- #
@@ -20,19 +21,23 @@ _BANNER_PRODUCTS = [
     ("vsftpd", r"vsftpd"), ("proftpd", r"proftpd"), ("pure-ftpd", r"pure-?ftpd"),
     ("filezilla", r"filezilla"), ("microsoft ftpd", r"microsoft ftp"),
     ("dovecot", r"dovecot"), ("courier", r"courier"), ("cyrus", r"cyrus"),
-    ("exim", r"exim"), ("postfix", r"postfix"), ("openssh", r"openssh"),
+    ("exim", r"exim"), ("postfix", r"postfix"), ("sendmail", r"sendmail"),
+    ("microsoft esmtp", r"microsoft esmtp"), ("openssh", r"openssh"),
 ]
 
 
 def banner_product_version(banner: str) -> tuple[str, str]:
-    """Best-effort (product, version) from a service banner."""
-    prod = ""
+    """Best-effort (product, version) from a service banner.
+
+    The version is read only from text AFTER the product name, so a hostname or
+    IP earlier in the banner ("220 10.0.0.5 ESMTP Exim 4.94.2") is never
+    mistaken for the version. No recognised product -> no version."""
     for name, rx in _BANNER_PRODUCTS:
-        if re.search(rx, banner, re.I):
-            prod = name
-            break
-    m = re.search(_VER, banner)
-    return prod, (m.group(1) if m else "")
+        pm = re.search(rx, banner, re.I)
+        if pm:
+            m = re.search(_VER, banner[pm.end():])
+            return name, (m.group(1) if m else "")
+    return "", ""
 
 
 def parse_mysql_greeting(data: bytes) -> tuple[str, str]:
@@ -116,12 +121,8 @@ class _BannerVersionProbe(ServiceProbe):
         prod, ver = banner_product_version(banner)
         port.service.name = self.svc_name
         port.service.banner = banner[:200]
-        if prod:
-            port.service.product = prod
-        if ver:
-            port.service.version = ver
-        if prod or ver:
-            port.service.confidence = Confidence.HIGH
+        set_service_version(port, prod, ver,
+                            confidence=Confidence.HIGH if (prod or ver) else None)
         return ProbeResult(data={self.svc_name: {"banner": banner[:200],
                                                  "product": prod, "version": ver}})
 
@@ -167,8 +168,10 @@ class SSHProbe(ServiceProbe):
             info["protocol_version"] = proto_ver
             info["software"] = software
             port.service.name = "ssh"
-            port.service.product = software
-            port.service.confidence = Confidence.HIGH
+            sw_prod, sw_ver = split_software(software)
+            set_service_version(port, sw_prod or software, sw_ver,
+                                evidence=f"SSH banner: {banner[:120]}",
+                                confidence=Confidence.HIGH)
             port.service.banner = banner
             if proto_ver.startswith("1."):
                 findings.append(Finding(
@@ -249,8 +252,7 @@ class MQTTProbe(ServiceProbe):
             return ProbeResult(error="not an MQTT broker")
         rc = resp[3]
         port.service.name = "mqtts" if use_tls else "mqtt"
-        port.service.product = "MQTT broker"
-        port.service.confidence = Confidence.HIGH
+        set_service_version(port, "MQTT broker", confidence=Confidence.HIGH)
         info = {"connack_rc": rc, "meaning": _MQTT_RC.get(rc, f"code {rc}")}
         findings = []
         if rc == 0:
@@ -287,10 +289,14 @@ class SMTPProbe(ServiceProbe):
         text = data.decode("latin-1", errors="replace")
         caps = [ln[4:].strip() for ln in text.splitlines() if len(ln) > 4]
         starttls = any("STARTTLS" in c.upper() for c in caps)
-        info = {"banner": text.splitlines()[0] if text else "",
-                "capabilities": caps, "starttls": starttls}
+        greeting = text.splitlines()[0] if text else ""
+        info = {"banner": greeting, "capabilities": caps, "starttls": starttls}
         port.service.name = "smtp"
-        port.service.confidence = Confidence.HIGH
+        if greeting and not port.service.banner:
+            port.service.banner = greeting[:200]
+        # "220 mx.example.com ESMTP Exim 4.94.2" / "... ESMTP Postfix (Ubuntu)"
+        prod, ver = banner_product_version(greeting)
+        set_service_version(port, prod, ver, confidence=Confidence.HIGH)
         findings = []
         if port.number in (25, 587) and not starttls:
             findings.append(Finding(
@@ -418,8 +424,12 @@ class DNSProbe(ServiceProbe):
                 version = ""
         if version:
             info["version.bind"] = version
-            port.service.product = version
-            port.service.confidence = Confidence.HIGH
+            dprod, dver = split_software(version)
+            # BIND answers version.bind with a bare number ("9.18.18-…-Ubuntu");
+            # others name themselves ("dnsmasq-2.86", "unbound 1.13.1").
+            set_service_version(port, dprod or ("ISC BIND" if dver else version),
+                                dver, evidence=f"version.bind: {version[:120]}",
+                                confidence=Confidence.HIGH)
         port.service.name = "dns"
         findings = []
 
@@ -612,8 +622,9 @@ class SMBProbe(ServiceProbe):
             return ProbeResult(error="connection failed")
 
         port.service.name = "smb"
-        port.service.product = "SMB"
-        port.service.confidence = Confidence.MEDIUM
+        # keep a richer product from nmap -sV ("Samba smbd", "Microsoft Windows
+        # netbios-ssn"); only label it generically when nothing better is known
+        set_service_version(port, "SMB", confidence=Confidence.MEDIUM)
         info: dict = {"reachable": True}
         findings = [Finding(
             title="SMB service reachable", asset=f"{ip}:{num}",
@@ -631,9 +642,19 @@ class SMBProbe(ServiceProbe):
         dialect = parse_smb2_dialect(resp2)
         if dialect is not None:
             ver = _SMB2_DIALECTS.get(dialect, f"SMB2 dialect 0x{dialect:04x}")
-            port.service.version = ver.replace("SMB ", "")
-            port.service.confidence = Confidence.HIGH
-            port.service.evidence = f"SMB2 NEGOTIATE -> {ver}"
+            dialect_ev = f"SMB2 NEGOTIATE -> {ver}"
+            if port.service.product == "SMB":
+                # no software version known: the negotiated dialect is the best
+                # version we have (e.g. "3.1.1")
+                set_service_version(port, version=ver.replace("SMB ", ""),
+                                    evidence=dialect_ev, confidence=Confidence.HIGH)
+            else:
+                # nmap identified the software (e.g. Samba smbd 4.15.13) — keep
+                # that version and record the dialect alongside as evidence
+                if dialect_ev not in (port.service.evidence or ""):
+                    port.service.evidence = "; ".join(
+                        x for x in (port.service.evidence, dialect_ev) if x)
+                set_service_version(port, confidence=Confidence.HIGH)
             info["dialect"] = ver
 
         # 2) does it also speak SMBv1? (separate connect; high-risk if yes)
@@ -691,8 +712,7 @@ class DatabaseProbe(ServiceProbe):
                     if line.startswith("redis_version:"):
                         ver = line.split(":", 1)[1].strip()
                 info["version"] = ver
-                port.service.product = ver
-                port.service.confidence = Confidence.HIGH
+                set_service_version(port, "Redis", ver, confidence=Confidence.HIGH)
                 findings.append(Finding(
                     title="Unauthenticated Redis instance", asset=f"{host.ip}:{port.number}",
                     evidence=f"INFO returned server data (redis_version={ver})",
@@ -715,9 +735,13 @@ class DatabaseProbe(ServiceProbe):
                 if mver:
                     product = mprod
                     info["version"] = mver
-                    port.service.product = mprod
-                    port.service.version = mver
-                    port.service.confidence = Confidence.HIGH
+                    # MariaDB prefixes a fake "5.5.5-" for old-client compat
+                    clean = re.sub(r"^5\.5\.5-", "", mver)
+                    clean = re.sub(r"-MariaDB.*$", "", clean, flags=re.I)
+                    set_service_version(port, "MariaDB" if mprod == "mariadb"
+                                        else "MySQL", clean,
+                                        evidence=f"handshake greeting: {mver[:80]}",
+                                        confidence=Confidence.HIGH)
             port.service.name = product
             findings.append(Finding(
                 title=f"Database service exposed: {product}", asset=f"{host.ip}:{port.number}",
@@ -807,8 +831,8 @@ class DatabaseProbe(ServiceProbe):
             info["unauthenticated"] = True
             info["version"] = ver
             if ver:
-                port.service.version = ver
-                port.service.confidence = Confidence.HIGH
+                set_service_version(port, "Memcached", ver,
+                                    confidence=Confidence.HIGH)
             return self._unauth_finding(
                 host, port, "Memcached", "server statistics",
                 f"stats returned server data without auth"
@@ -824,6 +848,7 @@ class DatabaseProbe(ServiceProbe):
                                  timeout=self.config.timeout)
             if st is None:
                 continue
+            self._http_db_version(host, port, product, scheme)
             if st == 200 and any(m in body for m in markers):
                 info["unauthenticated"] = True
                 return self._unauth_finding(
@@ -834,6 +859,30 @@ class DatabaseProbe(ServiceProbe):
                 return self._exposure_finding(host, port, product)
             break
         return self._exposure_finding(host, port, product)
+
+    # ES root: {"version": {"number": "7.17.9", ...}}; CouchDB root:
+    # {"couchdb": "Welcome", "version": "3.3.2", ...}
+    _HTTP_DB_VER = {
+        "elasticsearch": ("Elasticsearch",
+                          re.compile(r'"number"\s*:\s*"(\d[\w.\-]*)"')),
+        "couchdb": ("CouchDB", re.compile(r'"version"\s*:\s*"(\d[\w.\-]*)"')),
+    }
+
+    def _http_db_version(self, host, port, product, scheme) -> None:
+        """One read-only GET / to record the server version (served without
+        auth on default ES/CouchDB installs; silently skipped when not)."""
+        spec = self._HTTP_DB_VER.get(product)
+        if not spec or port.service.version:
+            return
+        from ..webfetch import fetch
+        st, _h, body = fetch(host.ip, port.number, scheme, "/",
+                             timeout=self.config.timeout)
+        if st == 200 and body:
+            m = spec[1].search(body)
+            if m:
+                set_service_version(port, spec[0], m.group(1),
+                                    evidence=f"GET / -> {spec[0]} {m.group(1)}",
+                                    confidence=Confidence.HIGH)
 
 
 class GenericProbe(ServiceProbe):
@@ -852,5 +901,9 @@ class GenericProbe(ServiceProbe):
             port.service.banner = banner
             if banner and port.service.confidence == Confidence.LOW:
                 port.service.confidence = Confidence.MEDIUM
+            # a recognisable product in an unknown-port banner -> record version
+            prod, ver = banner_product_version(banner)
+            if prod:
+                set_service_version(port, prod, ver)
             return ProbeResult(data={"generic": {"banner": banner}})
         return ProbeResult(error=err or "no banner")

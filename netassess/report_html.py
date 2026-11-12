@@ -57,6 +57,11 @@ def _esc(v) -> str:
     return html.escape(str(v if v is not None else ""))
 
 
+def _svc_label(svc) -> str:
+    """'OpenSSH 8.9p1' / 'nginx 1.18.0' / 'SMB' — product and version joined."""
+    return " ".join(x for x in (svc.product, svc.version) if x).strip()
+
+
 def _badge(sev: str) -> str:
     c = _SEV_COLORS.get(sev, "#546e7a")
     return f'<span class="badge" style="background:{c}">{_esc(sev.upper())}</span>'
@@ -99,6 +104,7 @@ class HTMLReport:
         parts.append(self._findings_section(view))
         parts.append(self._domains())
         parts.append(self._hosts())
+        parts.append(self._services())
         parts.append(self._http())
         parts.append(self._content())
         parts.append(self._tls())
@@ -251,7 +257,9 @@ class HTMLReport:
         for ip in sorted(self.graph.hosts):
             h = self.graph.hosts[ip]
             ports = ", ".join(
-                f"{p.number}/{p.service.name}" for p in h.open_ports()) or "-"
+                f"{p.number}/{p.service.name}"
+                + (f" ({_svc_label(p.service)})" if _svc_label(p.service) else "")
+                for p in h.open_ports()) or "-"
             role = h.primary_role if h.primary_role and h.primary_role != "unknown" else "-"
             rows.append(f"<tr><td class='mono'>{_esc(h.ip)}</td>"
                         f"<td>{_esc(h.hostnames[0] if h.hostnames else '-')}</td>"
@@ -260,6 +268,45 @@ class HTMLReport:
                         f"<td class='mono'>{_esc(ports)}</td></tr>")
         rows.append("</table>")
         return "".join(rows)
+
+    def _services(self) -> str:
+        """Every open port with its identified product + version, so the reader
+        sees exactly what software runs where — and which ports are unversioned."""
+        rows: list[str] = []
+        unversioned = 0
+        for ip in sorted(self.graph.hosts):
+            h = self.graph.hosts[ip]
+            ports = [(p, "tcp") for p in h.open_ports()]
+            ports += [(p, "udp") for p in sorted(h.udp_ports.values(),
+                                                 key=lambda x: x.number)
+                      if p.state.value in ("open", "open|filtered")]
+            for p, proto in ports:
+                svc = p.service
+                if not svc.version:
+                    unversioned += 1
+                ev = svc.evidence or (svc.banner or "")[:60]
+                rows.append(
+                    f"<tr><td class='mono'>{_esc(h.ip)}</td>"
+                    f"<td class='mono'>{p.number}/{proto}</td>"
+                    f"<td>{_esc(svc.name or '-')}</td>"
+                    f"<td>{_esc(svc.product or '-')}</td>"
+                    f"<td class='mono'>{_esc(svc.version or '-')}</td>"
+                    f"<td>{_esc(svc.confidence.value)}</td>"
+                    f"<td class='mono'>{_esc(ev or '-')}</td></tr>")
+        if not rows:
+            return ""
+        out = ["<h2>Services &amp; Versions</h2>",
+               "<table><tr><th>IP</th><th>Port</th><th>Service</th><th>Product</th>"
+               "<th>Version</th><th>Confidence</th><th>Evidence</th></tr>"]
+        out += rows
+        out.append("</table>")
+        if unversioned:
+            out.append(f"<p class='note'>{unversioned} port(s) have no version: the "
+                       "service did not disclose one to the safe probes. Install "
+                       "nmap (used automatically for -sV) or run with "
+                       "<code>--deep</code> (nmap version-intensity 5) for "
+                       "more.</p>")
+        return "".join(out)
 
     def _http(self) -> str:
         svcs = self.graph.all_http_services()

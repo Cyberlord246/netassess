@@ -130,6 +130,48 @@ def default_scheme(port: Port) -> str:
 _SERVER_RE = re.compile(r"^([A-Za-z][\w .+-]*?)(?:/(\d[\w.]*))?(?:\s|$|\()")
 
 
+_CONF_RANK = {Confidence.LOW: 0, Confidence.MEDIUM: 1, Confidence.HIGH: 2}
+
+
+def set_service_version(port: Port, product: str = "", version: str = "", *,
+                        evidence: str = "", confidence: Confidence | None = None
+                        ) -> None:
+    """Record product/version learned by a protocol probe WITHOUT clobbering a
+    stronger source (nmap -sV, nmap import, an earlier probe). Only empty fields
+    are filled, and confidence only ever goes up — never down."""
+    svc = port.service
+    if product and not svc.product:
+        svc.product = product.strip()
+    if version and not svc.version:
+        svc.version = version.strip()
+    if evidence and not svc.evidence:
+        svc.evidence = evidence
+    if confidence is not None and (_CONF_RANK.get(confidence, 0)
+                                   > _CONF_RANK.get(svc.confidence, 0)):
+        svc.confidence = confidence
+
+
+# "OpenSSH_8.9p1 Ubuntu-3ubuntu0.6", "dropbear_2022.83", "OpenSSH_for_Windows_8.1",
+# "dnsmasq-2.86", "unbound 1.13.1", "PowerDNS Recursor 4.8.1", "Cisco-1.25"
+_SOFTWARE_RE = re.compile(r"^(.+?)[_\-/ ]v?(\d[\w.]*)(?:[\s_-]+(.*))?$")
+_LEADING_VER = re.compile(r"^(\d+(?:\.\d+)+[a-z0-9]*)")
+
+
+def split_software(s: str) -> tuple[str, str]:
+    """Split a software identifier into (product, version). A bare version string
+    (e.g. BIND's "9.18.18-0ubuntu0.22.04.1-Ubuntu") yields ("", "9.18.18")."""
+    s = (s or "").strip()
+    if not s:
+        return "", ""
+    if s[0].isdigit():
+        m = _LEADING_VER.match(s)
+        return "", (m.group(1) if m else "")
+    m = _SOFTWARE_RE.match(s)
+    if not m:
+        return s, ""
+    return m.group(1).strip(), m.group(2)
+
+
 def apply_server_version(port: Port, server: str) -> None:
     """Populate the port's service product/version from an HTTP Server header, so
     web servers appear in the Service Versions report (not just header-detected
