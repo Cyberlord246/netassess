@@ -53,6 +53,7 @@ class FeroxbusterAdapter(ToolAdapter):
                    depth: int = 2, timeout: int = 7, rate: float = 0.0,
                    extensions: str = "", thorough: bool = False,
                    headers: list[str] | None = None,
+                   filter_sizes: list[int] | None = None,
                    user_agent: str = "netassess/1.0 (authorized security assessment)"
                    ) -> list[str]:
         argv = [
@@ -71,6 +72,11 @@ class FeroxbusterAdapter(ToolAdapter):
             "--no-state",             # don't drop a .state file
             "--dont-scan", _DONT_SCAN,
         ]
+        # pre-computed wildcard response sizes (e.g. every path 301/302s with the
+        # same length) — filter them from the FIRST request so we don't waste the
+        # whole wordlist on identical garbage before --auto-tune reacts.
+        for sz in (filter_sizes or []):
+            argv += ["-S", str(sz)]
         # Virtual-host scanning: keep the connection pinned to the authorized IP
         # in `base_url`, but present the vhost via an explicit Host header so
         # name-based vhosts route correctly. We never put the hostname in the URL
@@ -119,7 +125,8 @@ class FeroxbusterAdapter(ToolAdapter):
     def scan_service(self, host: Host, svc: HTTPService, *, wordlist: str,
                      threads: int = 40, depth: int = 2, timeout: int = 7,
                      rate: float = 0.0, extensions: str = "",
-                     thorough: bool = False, run_timeout: float = 900.0
+                     thorough: bool = False, filter_sizes: list[int] | None = None,
+                     run_timeout: float = 900.0
                      ) -> tuple[list[dict], list[Finding], ProcResult]:
         from ..content_discovery import categorize, make_findings
 
@@ -133,7 +140,8 @@ class FeroxbusterAdapter(ToolAdapter):
             headers.append(f"Host: {vhost}")
         argv = self.build_argv(base_url, wordlist, threads=threads, depth=depth,
                                timeout=timeout, rate=rate, extensions=extensions,
-                               thorough=thorough, headers=headers)
+                               thorough=thorough, headers=headers,
+                               filter_sizes=filter_sizes)
         res = run(argv, timeout=run_timeout)
         # feroxbuster exits non-zero in some benign cases; parse whatever JSON exists
         records = self.parse_json(res.stdout) if res.stdout else []

@@ -779,11 +779,45 @@ class AssessmentEngine:
             timeout=int(self.config.timeout) + 5, rate=self.config.rate,
             extensions=self._ferox_extensions(svc),
             thorough=self.config.content_thorough,
+            filter_sizes=self._wildcard_sizes(svc),
         )
         if res.not_found:
             # shouldn't happen (we checked available()), but be safe
             return self.content.scan_service(host, svc)
         return findings
+
+    def _wildcard_sizes(self, svc) -> list:
+        """Detect wildcard behaviour (every path returns the same 3xx/200 with the
+        same length) by probing a few random non-existent paths. Returns the
+        response size(s) to hand feroxbuster's --filter-size, so it drops the
+        garbage from the first request instead of scanning the whole wordlist."""
+        import random
+        import string
+        from urllib.parse import urlparse
+        from .webfetch import fetch
+        if not self.scope.authorize(svc.ip, svc.port).allowed:
+            return []
+        parsed = urlparse(svc.url)
+        hh = parsed.hostname if (parsed.hostname and parsed.hostname != svc.ip) else None
+        seen: list[tuple] = []
+        for _ in range(3):
+            rnd = "/" + "".join(random.choices(string.ascii_lowercase + string.digits, k=18))
+            st, hdrs, body = fetch(svc.ip, svc.port, svc.scheme, rnd,
+                                   host_header=hh, timeout=self.config.timeout)
+            if st is None:
+                continue
+            cl = hdrs.get("content-length")
+            length = int(cl) if (cl and cl.isdigit()) else len(body or "")
+            if st in (200, 301, 302, 307, 308):
+                seen.append((st, length))
+        # wildcard only if >=2 random paths agreed on a 'present' status + length
+        if len(seen) >= 2 and len({s for s in seen}) == 1:
+            st, length = seen[0]
+            self._log(f"[content] {svc.ip}:{svc.port}: wildcard responses "
+                      f"(HTTP {st}, len {length}) — feroxbuster --filter-size "
+                      f"{length} to suppress the garbage")
+            return [length]
+        return []
 
     def _ferox_extensions(self, svc) -> str:
         """Pick content-discovery extensions for this service:
