@@ -803,9 +803,38 @@ def _clean_exit(code: int) -> int:
     return code
 
 
+def _install_sigint_handler() -> None:
+    """Exit immediately on the first Ctrl-C.
+
+    Without this, a KeyboardInterrupt has to unwind through a ThreadPoolExecutor
+    whose shutdown waits for (and drains) its queued tasks, and through any
+    shelled-out tool — so the shell prompt doesn't return and the tool looks
+    hung. State is flushed to disk after every stage, so an immediate exit is
+    safe. os._exit skips the blocking cleanup and hands the terminal straight
+    back (child processes share the foreground group and get the Ctrl-C too).
+    """
+    import signal
+
+    def _handler(_signum, _frame):
+        try:
+            sys.stdout.write("\n^C interrupted — exiting "
+                             "(partial results saved to the output dir)\n")
+            sys.stdout.flush()
+            sys.stderr.flush()
+        except Exception:
+            pass
+        os._exit(130)
+
+    try:
+        signal.signal(signal.SIGINT, _handler)
+    except (ValueError, OSError):
+        pass        # not in the main thread / unsupported — fall back to default
+
+
 def main(argv=None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    _install_sigint_handler()
     try:
         code = args.func(args)
     except FileNotFoundError as exc:
