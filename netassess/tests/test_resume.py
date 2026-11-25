@@ -52,6 +52,29 @@ def test_without_resume_everything_runs():
     assert ran["vuln"] == 1          # no resume -> runs again
 
 
+def test_targets_recovered_from_state_for_resume():
+    # --resume with no --targets must recover the target list from the prior
+    # state.json so the existing scan continues (meta.targets preferred).
+    import json
+    import os
+    from ..cli import _targets_from_state
+
+    out = tempfile.mkdtemp(prefix="na-res3-")
+    path = os.path.join(out, "state.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump({"meta": {"targets": ["192.0.2.0/30", "198.51.100.5"]},
+                   "hosts": {"192.0.2.1": {}, "192.0.2.2": {}}}, fh)
+    assert _targets_from_state(path) == ["192.0.2.0/30", "198.51.100.5"]
+
+    # no meta.targets -> fall back to the concrete host IPs already scanned
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump({"meta": {}, "hosts": {"10.0.0.1": {}, "10.0.0.2": {}}}, fh)
+    assert set(_targets_from_state(path)) == {"10.0.0.1", "10.0.0.2"}
+
+    # missing file -> nothing to recover (caller then errors cleanly)
+    assert _targets_from_state(os.path.join(out, "nope.json")) == []
+
+
 def _run_all():
     fns = [v for k, v in globals().items() if k.startswith("test_")]
     for fn in fns:

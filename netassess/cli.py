@@ -53,6 +53,27 @@ def _read_targets(value: str | None, is_file_hint: bool = False) -> list[str]:
     return tokens
 
 
+def _targets_from_state(path: str) -> list[str]:
+    """Recover the target list from a prior state.json so --resume can continue
+    the *existing* assessment without the operator re-supplying --targets.
+
+    Prefers the original ``meta.targets`` (the exact CIDRs/IPs the scan was
+    launched with); falls back to the concrete host IPs already in the graph.
+    """
+    if not os.path.isfile(path):
+        return []
+    import json
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return []
+    tg = (data.get("meta") or {}).get("targets") or []
+    if tg:
+        return list(tg)
+    return list((data.get("hosts") or {}).keys())
+
+
 def _parse_ports(spec: str | None) -> list[int] | None:
     if not spec:
         return None
@@ -248,6 +269,22 @@ def cmd_scan(args) -> int:
         print(f" import      : {args.nmap_import} -> "
               f"{len(imported_ports)} host(s), "
               f"{sum(len(v) for v in imported_ports.values())} open port(s)")
+
+    # --resume: if no targets were given, continue the EXISTING assessment by
+    # recovering its target list from the prior state.json in the output dir.
+    # (A crash/Ctrl-C mid-scan leaves an interrupted stage unmarked, so resume
+    # re-runs only that stage; completed stages are skipped.)
+    if cfg.resume and not cfg.targets:
+        prior = os.path.join(cfg.output_dir, cfg.state_file)
+        recovered = _targets_from_state(prior)
+        if recovered:
+            cfg.targets = recovered
+            print(f" resume      : continuing existing scan — recovered "
+                  f"{len(recovered)} target(s) from {prior}")
+        else:
+            print(f"error: --resume given but no targets and no reusable "
+                  f"state.json at {prior}", file=sys.stderr)
+            return 2
 
     if not cfg.targets:
         print("error: no targets provided (--targets FILE|IP,IP,CIDR or --nmap-import)",
@@ -626,7 +663,7 @@ def _add_scan_args(sp: argparse.ArgumentParser):
     from .profiles import profile_names, help_text, DEFAULT_PROFILE
     sp.add_argument("--targets",
                     help="file path, or comma-separated IPs/CIDRs "
-                         "(optional if --nmap-import is given)")
+                         "(optional if --nmap-import or --resume is given)")
     sp.add_argument("--nmap-import", dest="nmap_import", metavar="FILE",
                     help="import an existing nmap scan (XML -oX or greppable -oG): "
                          "its open ports seed the assessment and its hosts are "
@@ -664,8 +701,9 @@ def _add_scan_args(sp: argparse.ArgumentParser):
     sp.add_argument("--no-progress", dest="no_progress", action="store_true",
                     help="suppress the staged plan + live progress output")
     sp.add_argument("--resume", action="store_true",
-                    help="continue a prior run: load state.json from the output "
-                         "dir and skip stages already completed")
+                    help="continue a prior/cancelled run: load state.json from the "
+                         "output dir, recover its targets if --targets is omitted, "
+                         "and skip stages already completed")
     sp.add_argument("--crawl", action="store_true",
                     help="bounded same-host web crawl from each web root, feeding "
                          "more pages/JS into endpoint + secret analysis (GET-only)")
