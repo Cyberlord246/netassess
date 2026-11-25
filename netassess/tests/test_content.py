@@ -126,22 +126,23 @@ def _mk(path, status, category="common", loc="", ct="", title="", length=100):
             "location": loc, "content_type": ct, "length": length}
 
 
-def test_redirects_grouped_by_destination_with_representatives():
+def test_bulk_redirect_gate_is_suppressed_not_reported():
+    # 500 paths -> /login is a wildcard gate: collapsed into the noise summary,
+    # NOT a per-destination finding (the flood the user asked to filter).
     from ..content_discovery import make_findings
     hits = [_mk(f"page{i}", 302, loc="/login") for i in range(500)]
-    fs = make_findings("h:80", hits, source="feroxbuster")
-    red = [f for f in fs if f.title == "Redirects to /login"]
-    assert len(red) == 1                       # 500 URLs -> ONE finding
-    assert "500 URL" in red[0].evidence
-    assert red[0].evidence.count("http://h/page") == 3   # 3 representatives
-    assert "+497 more" in red[0].evidence
+    fs = make_findings("h:80", hits, source="feroxbuster", wildcard_min=8)
+    assert not any(f.title == "Redirects to /login" for f in fs)
+    noise = [f for f in fs if f.title == "Wildcard/noise responses suppressed"]
+    assert len(noise) == 1 and "500×" in noise[0].evidence
 
 
-def test_different_redirect_destinations_stay_separate():
+def test_few_distinct_redirects_stay_separate():
+    # below the wildcard threshold -> kept as real, glanceable findings
     from ..content_discovery import make_findings
     hits = [_mk("a", 302, loc="/login"), _mk("b", 302, loc="/login"),
             _mk("c", 301, loc="/home")]
-    fs = make_findings("h:80", hits, source="feroxbuster")
+    fs = make_findings("h:80", hits, source="feroxbuster", wildcard_min=8)
     titles = {f.title for f in fs}
     assert "Redirects to /login" in titles and "Redirects to /home" in titles
 
@@ -179,15 +180,18 @@ def test_static_filtered_by_content_type():
     assert not _is_static(_mk("page", 200, ct="text/html"))
 
 
-def test_other_statuses_grouped_with_representatives():
+def test_other_statuses_small_kept_bulk_suppressed():
     from ..content_discovery import make_findings
+    # 10×403 is a WAF/blanket flood (>= wildcard_min) -> suppressed;
+    # 5×401 is a small, meaningful group -> kept with examples.
     hits = ([_mk(f"a{i}", 403) for i in range(10)] +
             [_mk(f"b{i}", 401) for i in range(5)])
-    fs = make_findings("h:80", hits, source="feroxbuster")
-    f403 = [f for f in fs if "HTTP 403" in f.title][0]
+    fs = make_findings("h:80", hits, source="feroxbuster", wildcard_min=8)
+    assert not any("HTTP 403" in f.title for f in fs)        # flood suppressed
     f401 = [f for f in fs if "HTTP 401" in f.title][0]
-    assert "10 URL" in f403.evidence and f403.evidence.count("http://h/a") == 3
     assert "5 URL" in f401.evidence
+    noise = [f for f in fs if f.title == "Wildcard/noise responses suppressed"]
+    assert noise and "HTTP 403" in noise[0].evidence
 
 
 def test_high_value_paths_grouped_by_category():

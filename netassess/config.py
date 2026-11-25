@@ -111,6 +111,15 @@ class Config:
     content_depth: int = 2            # feroxbuster recursion depth
     content_extensions: str = ""      # e.g. "php,bak,zip,sql" (feroxbuster -x)
     content_thorough: bool = False    # feroxbuster: collect extensions + backups
+    # noise control for content discovery:
+    #   content_filter_status — HARD-drop these HTTP codes everywhere (even on
+    #     sensitive paths), e.g. "301,302,403". Empty = keep (smart-suppress only).
+    #   content_wildcard_min  — a generic-path redirect group (same destination)
+    #     or forbidden/other-status group of >= this many hits is treated as
+    #     wildcard/WAF noise and collapsed into ONE summary line, not reported
+    #     per-path. Canonical self-redirects (/x -> /x/) are always collapsed.
+    content_filter_status: str = ""
+    content_wildcard_min: int = 8
 
     # --- validation & assessment ------------------------------------------
     validate: bool = True               # run the (non-destructive) validation layer

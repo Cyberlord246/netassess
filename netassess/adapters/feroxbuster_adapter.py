@@ -54,8 +54,17 @@ class FeroxbusterAdapter(ToolAdapter):
                    extensions: str = "", thorough: bool = False,
                    headers: list[str] | None = None,
                    filter_sizes: list[int] | None = None,
+                   filter_status: "set | None" = None,
                    user_agent: str = "netassess/1.0 (authorized security assessment)"
                    ) -> list[str]:
+        # operator-chosen codes (e.g. 301,302,403) are dropped at the SOURCE too,
+        # so they never appear in feroxbuster's live output — not just the report.
+        filt = _FILTER_STATUS
+        if filter_status:
+            extra = ",".join(str(s) for s in sorted(filter_status)
+                             if s not in {404, 400, 500, 501, 502, 503})
+            if extra:
+                filt = f"{_FILTER_STATUS},{extra}"
         argv = [
             "feroxbuster",
             "-u", base_url,
@@ -64,7 +73,7 @@ class FeroxbusterAdapter(ToolAdapter):
             "--silent",               # only JSON on stdout, no banner/progress
             "-k",                     # accept self-signed/invalid TLS
             "--auto-tune",            # dynamically filter wildcard/garbage
-            "--filter-status", _FILTER_STATUS,
+            "--filter-status", filt,
             "-t", str(max(1, threads)),
             "--depth", str(max(1, depth)),
             "--timeout", str(max(1, int(timeout))),
@@ -126,6 +135,7 @@ class FeroxbusterAdapter(ToolAdapter):
                      threads: int = 40, depth: int = 2, timeout: int = 7,
                      rate: float = 0.0, extensions: str = "",
                      thorough: bool = False, filter_sizes: list[int] | None = None,
+                     filter_status: "set | None" = None, wildcard_min: int = 8,
                      run_timeout: float = 900.0
                      ) -> tuple[list[dict], list[Finding], ProcResult]:
         from ..content_discovery import categorize, make_findings
@@ -141,10 +151,13 @@ class FeroxbusterAdapter(ToolAdapter):
         argv = self.build_argv(base_url, wordlist, threads=threads, depth=depth,
                                timeout=timeout, rate=rate, extensions=extensions,
                                thorough=thorough, headers=headers,
-                               filter_sizes=filter_sizes)
+                               filter_sizes=filter_sizes,
+                               filter_status=filter_status)
         res = run(argv, timeout=run_timeout)
         # feroxbuster exits non-zero in some benign cases; parse whatever JSON exists
         records = self.parse_json(res.stdout) if res.stdout else []
+        if filter_status:                      # belt-and-suspenders at parse time
+            records = [r for r in records if r["status"] not in filter_status]
 
         # attribute vhost paths to the vhost so they don't merge with the default site
         asset = f"{host.ip}:{svc.port}" + (f" [{vhost}]" if vhost else "")
@@ -171,7 +184,9 @@ class FeroxbusterAdapter(ToolAdapter):
         discovered.sort(key=lambda x: x["path"])
         svc.discovered_paths = discovered
         # high-value paths -> individual findings; generic ones -> one grouped entry
-        findings = make_findings(asset, hits, source="feroxbuster")
+        findings = make_findings(asset, hits, source="feroxbuster",
+                                 filter_status=filter_status,
+                                 wildcard_min=wildcard_min)
         return discovered, findings, res
 
 

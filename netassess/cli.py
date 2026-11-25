@@ -183,6 +183,10 @@ def _build_config(args) -> Config:
         cfg.content_extensions = args.content_extensions
     if getattr(args, "content_thorough", False):
         cfg.content_thorough = True
+    if getattr(args, "content_filter_status", None):
+        cfg.content_filter_status = args.content_filter_status
+    if getattr(args, "content_wildcard_min", None) is not None:
+        cfg.content_wildcard_min = args.content_wildcard_min
     if getattr(args, "no_html", False):
         cfg.html_report = False
     if getattr(args, "csv", False):
@@ -759,6 +763,18 @@ def _add_scan_args(sp: argparse.ArgumentParser):
                     action="store_true",
                     help="feroxbuster: also collect real extensions and probe "
                          "for backups of discovered pages")
+    sp.add_argument("--content-filter-status", dest="content_filter_status",
+                    metavar="CODES",
+                    help="drop these HTTP status codes from content discovery "
+                         "entirely (even on sensitive paths), e.g. 301,302,403. "
+                         "Use when an app redirects/forbids everything and you "
+                         "want those codes gone completely.")
+    sp.add_argument("--content-wildcard-min", dest="content_wildcard_min",
+                    type=int, metavar="N",
+                    help="a generic-path redirect group (same destination) or "
+                         "forbidden/other-status group of >= N hits is suppressed "
+                         "as wildcard/WAF noise and collapsed to one summary line "
+                         "(default 8; canonical /x -> /x/ redirects always collapse)")
     sp.add_argument("--no-cve", dest="no_cve", action="store_true",
                     help="disable CVE correlation")
     sp.add_argument("--cve-online", dest="cve_online", action="store_true",

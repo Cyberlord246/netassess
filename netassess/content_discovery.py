@@ -432,7 +432,11 @@ class ContentDiscovery:
              "length": h["length"], "category": h["category"], "title": h["title"]}
             for h in hits]
         asset = f"{ip}:{port}" + (f" [{vhost}]" if vhost else "")
-        return make_findings(asset, hits, source="content-discovery")
+        return make_findings(
+            asset, hits, source="content-discovery",
+            filter_status=parse_status_set(
+                getattr(self.config, "content_filter_status", "")),
+            wildcard_min=getattr(self.config, "content_wildcard_min", 8))
 
 
 
@@ -571,6 +575,29 @@ def _dest_of(h: dict) -> str:
     return urlparse(loc).path or loc
 
 
+def _is_canonical_redirect(h: dict) -> bool:
+    """True when a 3xx just points back at the SAME resource — a trailing-slash
+    or http->https canonicalisation (/admin -> /admin/, http://x/a -> https://x/a).
+    These carry no new information and flood the report one-per-path, so they are
+    always collapsed into the noise summary rather than reported individually."""
+    if not (300 <= h.get("status", 0) < 400):
+        return False
+    src = "/" + (h.get("path", "") or "").lstrip("/")
+    dst = _dest_of(h)
+    if dst in ("", "(unspecified)"):
+        return False
+    return dst.rstrip("/") == src.rstrip("/")
+
+
+def parse_status_set(spec: str) -> set:
+    """'301,302, 403' -> {301, 302, 403}. Ignores blanks/garbage."""
+    out: set = set()
+    for tok in (spec or "").replace(" ", "").split(","):
+        if tok.isdigit():
+            out.add(int(tok))
+    return out
+
+
 def _grouped_finding(asset, source, title, category, severity, description,
                      why, hits) -> Finding:
     """One finding for a group of hits: show 2-3 representative URLs + a count."""
@@ -588,23 +615,33 @@ def _grouped_finding(asset, source, title, category, severity, description,
         validation=ValidationState.OBSERVED, source=source, category=category)
 
 
-def make_findings(asset: str, hits: list[dict], source: str = "content-discovery"
+def make_findings(asset: str, hits: list[dict], source: str = "content-discovery",
+                  *, filter_status: "set | None" = None, wildcard_min: int = 8
                   ) -> list[Finding]:
     """Deduplicated, filtered, prioritised findings from raw content-discovery
     hits:
       * static assets (css/images/fonts/media/icons) are dropped;
+      * ``filter_status`` codes (operator-chosen, e.g. {301,302,403}) are dropped
+        entirely, on every path including sensitive ones;
       * high-value paths (.env/.git/admin/api/...) get their own finding;
-      * 3xx redirects are grouped by destination (2-3 example URLs + a count);
+      * canonical self-redirects (/x -> /x/) and any generic redirect/forbidden
+        group of >= ``wildcard_min`` identical hits are suppressed as wildcard/WAF
+        noise — collapsed into ONE summary line instead of flooding the report;
+      * remaining (few, distinct) 3xx are grouped by destination;
       * 200s are deduplicated by response signature and listed as absolute URLs;
-      * other statuses (401/403/405/5xx) are grouped by status with examples.
+      * small 401/403/405/5xx groups are grouped by status with examples.
     """
     from collections import defaultdict
 
     findings: list[Finding] = []
     hits = [h for h in hits if not _is_static(h)]      # (3) filter static
     hits = [h for h in hits if h.get("status") != 404]  # 404 == not reachable
+    if filter_status:                                  # operator hard-drop
+        hits = [h for h in hits if h.get("status") not in filter_status]
     high = [h for h in hits if h["category"] not in GROUPED_CATEGORIES]
     generic = [h for h in hits if h["category"] in GROUPED_CATEGORIES]
+    wildcard_min = max(2, int(wildcard_min))
+    suppressed: dict = {}            # reason -> count, for the single noise line
 
     # high-value paths -> ONE finding per category per host (not per path), so a
     # host with many auth/admin/api paths yields a single grouped title that
@@ -620,18 +657,26 @@ def make_findings(asset: str, hits: list[dict], source: str = "content-discovery
     other = [h for h in generic if h["status"] not in range(300, 400)
              and h["status"] != 200]
 
-    # (1) group redirects by destination — one finding per destination
+    # (1) redirects: drop canonical self-redirects and bulk wildcard gates;
+    #     report only the FEW remaining distinct destinations.
+    canonical = [h for h in redirects if _is_canonical_redirect(h)]
+    if canonical:
+        suppressed["canonical self-redirects (/x -> /x/)"] = len(canonical)
+    real = [h for h in redirects if not _is_canonical_redirect(h)]
     dests: dict = defaultdict(list)
-    for h in redirects:
+    for h in real:
         dests[_dest_of(h)].append(h)
     for dest, grp in sorted(dests.items(), key=lambda kv: -len(kv[1])):
+        if len(grp) >= wildcard_min:        # wildcard gate (e.g. all -> /login)
+            suppressed[f"redirects to {dest}"] = len(grp)
+            continue
         findings.append(_grouped_finding(
             asset, source, f"Redirects to {dest}", "content-redirect",
             Severity.INFO,
             f"{len(grp)} discovered path(s) return a redirect (3xx) to {dest} "
             "(commonly an auth/login gate or canonical redirect).",
-            "Bulk identical redirects usually mean auth-gated or non-existent "
-            "paths; grouped to keep the report clean.",
+            "A distinct redirect destination worth a glance; bulk/canonical "
+            "redirects were suppressed as noise.",
             grp))
 
     # (2) deduplicate 200s by response signature; list unique absolute URLs
@@ -662,11 +707,15 @@ def make_findings(asset: str, hits: list[dict], source: str = "content-discovery
             validation=ValidationState.OBSERVED, source=source,
             category="content-200"))
 
-    # (2) other statuses (401/403/405/5xx) grouped by status with examples
+    # (2) other statuses (401/403/405/5xx) grouped by status; a bulk group is
+    #     WAF/blanket noise (e.g. 403 on everything) -> suppress to the summary.
     by_status: dict = defaultdict(list)
     for h in other:
         by_status[h["status"]].append(h)
     for st, grp in sorted(by_status.items()):
+        if len(grp) >= wildcard_min:
+            suppressed[f"HTTP {st} on generic paths"] = len(grp)
+            continue
         findings.append(_grouped_finding(
             asset, source, f"Access-controlled/other paths (HTTP {st})",
             "content-other", Severity.LOW,
@@ -674,6 +723,27 @@ def make_findings(asset: str, hits: list[dict], source: str = "content-discovery
             ("401/403 confirm a resource exists but is protected; other codes "
              "may indicate faults or filtering."),
             grp))
+
+    # one concise line for everything suppressed as noise (never per-path)
+    if suppressed:
+        total = sum(suppressed.values())
+        breakdown = "; ".join(f"{n}× {reason}"
+                              for reason, n in sorted(suppressed.items(),
+                                                      key=lambda kv: -kv[1]))
+        findings.append(Finding(
+            title="Wildcard/noise responses suppressed", asset=asset,
+            evidence=f"{total} low-value response(s) collapsed: {breakdown}"[:1500],
+            description="The server returned the same redirect/forbidden response "
+                        "for many non-existent paths (wildcard or WAF behaviour). "
+                        "These were suppressed so they do not flood the report.",
+            why_it_matters="Blanket 3xx/403 responses are not real findings; "
+                           "hiding them keeps the discovered-content list signal-rich.",
+            severity=Severity.INFO, confidence=Confidence.MEDIUM,
+            impact="None — informational noise summary.",
+            remediation="To drop these codes entirely (even this line), rerun with "
+                        "--content-filter-status (e.g. 301,302,403).",
+            validation=ValidationState.OBSERVED, source=source,
+            category="content-noise"))
     return findings
 
 

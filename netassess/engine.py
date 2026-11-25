@@ -782,6 +782,7 @@ class AssessmentEngine:
         self._log(f"[content] {added} path finding(s) added{note}")
 
     def _run_ferox(self, host, svc):
+        from .content_discovery import parse_status_set
         wordlist = self.config.content_wordlist or _BUNDLED_WORDLIST
         _recs, findings, res = self.ferox.scan_service(
             host, svc, wordlist=wordlist,
@@ -790,6 +791,9 @@ class AssessmentEngine:
             extensions=self._ferox_extensions(svc),
             thorough=self.config.content_thorough,
             filter_sizes=self._wildcard_sizes(svc),
+            filter_status=parse_status_set(
+                getattr(self.config, "content_filter_status", "")),
+            wildcard_min=getattr(self.config, "content_wildcard_min", 8),
         )
         if res.not_found:
             # shouldn't happen (we checked available()), but be safe
