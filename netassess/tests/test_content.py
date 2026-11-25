@@ -137,14 +137,27 @@ def test_bulk_redirect_gate_is_suppressed_not_reported():
     assert len(noise) == 1 and "500×" in noise[0].evidence
 
 
-def test_few_distinct_redirects_stay_separate():
-    # below the wildcard threshold -> kept as real, glanceable findings
+def test_onsite_redirects_are_always_noise():
+    # a 3xx to an on-site app page (auth gate, landing page) is routing, not a
+    # discovered resource -> never a per-destination finding, even a handful.
+    # This is the "Redirects to /journals xN hosts" false positive being killed.
     from ..content_discovery import make_findings
     hits = [_mk("a", 302, loc="/login"), _mk("b", 302, loc="/login"),
-            _mk("c", 301, loc="/home")]
+            _mk("c", 301, loc="/journals")]
     fs = make_findings("h:80", hits, source="feroxbuster", wildcard_min=8)
-    titles = {f.title for f in fs}
-    assert "Redirects to /login" in titles and "Redirects to /home" in titles
+    assert not any(f.title.startswith("Redirects to") for f in fs)
+    assert not any(f.title.startswith("Off-site redirect") for f in fs)
+    noise = [f for f in fs if f.title == "Wildcard/noise responses suppressed"]
+    assert noise and "redirects to /journals" in noise[0].evidence
+
+
+def test_offsite_redirect_is_kept_as_possible_open_redirect():
+    # a 3xx to a DIFFERENT host can be an open redirect -> keep it.
+    from ..content_discovery import make_findings
+    hits = [_mk("go", 302, loc="https://evil.example.net/landing")]
+    fs = make_findings("h:80", hits, source="feroxbuster", wildcard_min=8)
+    assert any(f.title.startswith("Off-site redirect to") and
+               "evil.example.net" in f.title for f in fs)
 
 
 def test_200s_deduplicated_by_signature():

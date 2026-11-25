@@ -42,15 +42,18 @@ def test_canonical_self_redirects_collapse_to_one_line():
     assert len(noise) == 1 and "30×" in noise[0].evidence
 
 
-def test_bulk_gate_suppressed_but_distinct_redirect_kept():
+def test_onsite_redirects_all_suppressed_bulk_or_distinct():
+    # on-site redirects are app routing -> all noise, whether a bulk gate or a
+    # lone distinct destination. Nothing is reported as a "Redirects to" finding.
     hits = [_h(f"p{i}", 302, location="/login") for i in range(20)]   # gate
     hits.append(_h("legacy", 302, location="/v2/home"))              # distinct
     fs = make_findings("10.0.0.5:80", hits, wildcard_min=8)
     titles = [f.title for f in fs]
-    assert "Redirects to /v2/home" in titles                 # the few useful kept
-    assert not any(t == "Redirects to /login" for t in titles)   # gate suppressed
+    assert not any(t.startswith("Redirects to") for t in titles)
+    assert not any(t.startswith("Off-site redirect") for t in titles)
     noise = [f for f in fs if f.title == "Wildcard/noise responses suppressed"]
     assert noise and "redirects to /login" in noise[0].evidence
+    assert "redirects to /v2/home" in noise[0].evidence
 
 
 def test_waf_403_flood_suppressed_small_group_kept():

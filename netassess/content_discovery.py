@@ -598,6 +598,40 @@ def parse_status_set(spec: str) -> set:
     return out
 
 
+def _asset_hosts(asset: str) -> set:
+    """Hosts that count as "this service" — the IP and any vhost in the asset
+    string, e.g. '10.0.0.5:80 [app.example.com]' -> {'10.0.0.5', 'app.example.com'}."""
+    hosts: set = set()
+    m = re.match(r"\s*([^\s:]+):\d+", asset or "")
+    if m:
+        hosts.add(m.group(1).lower())
+    m2 = re.search(r"\[([^\]]+)\]", asset or "")
+    if m2:
+        hosts.add(m2.group(1).lower())
+    return hosts
+
+
+def _redirect_offsite(h: dict, asset_hosts: set) -> bool:
+    """True when a 3xx Location points at a *different host* than the one we
+    scanned. Relative redirects (no host) and redirects back to our own host/
+    vhost are on-site; only off-site ones can signal an open redirect."""
+    from urllib.parse import urlparse
+    netloc = urlparse(h.get("location") or "").netloc.lower()
+    if not netloc:
+        return False                       # relative Location -> same host
+    host = netloc.split("@")[-1].rsplit(":", 1)[0].strip("[]")
+    return bool(host) and host not in asset_hosts
+
+
+def _redirect_target(h: dict) -> str:
+    """Full off-site destination (scheme://host/path) for grouping open-redirects."""
+    from urllib.parse import urlparse
+    u = urlparse(h.get("location") or "")
+    if u.netloc:
+        return (f"{u.scheme or 'http'}://{u.netloc}{u.path or ''}").rstrip("/")
+    return _dest_of(h)
+
+
 def _grouped_finding(asset, source, title, category, severity, description,
                      why, hits) -> Finding:
     """One finding for a group of hits: show 2-3 representative URLs + a count."""
@@ -624,10 +658,14 @@ def make_findings(asset: str, hits: list[dict], source: str = "content-discovery
       * ``filter_status`` codes (operator-chosen, e.g. {301,302,403}) are dropped
         entirely, on every path including sensitive ones;
       * high-value paths (.env/.git/admin/api/...) get their own finding;
-      * canonical self-redirects (/x -> /x/) and any generic redirect/forbidden
-        group of >= ``wildcard_min`` identical hits are suppressed as wildcard/WAF
-        noise — collapsed into ONE summary line instead of flooding the report;
-      * remaining (few, distinct) 3xx are grouped by destination;
+      * on a generic path, every on-site redirect (canonical /x -> /x/, auth
+        gate, catch-all landing page) is app routing, not a resource, so ALL of
+        them collapse into ONE noise summary line regardless of count — this is
+        what stops "Redirects to /journals ×N hosts" false positives;
+      * only off-site redirects (to a different host) survive, as a possible
+        open redirect, and even those collapse when >= ``wildcard_min`` identical;
+      * same-status 401/403/405/5xx groups of >= ``wildcard_min`` are suppressed
+        as wildcard/WAF noise;
       * 200s are deduplicated by response signature and listed as absolute URLs;
       * small 401/403/405/5xx groups are grouped by status with examples.
     """
@@ -657,26 +695,45 @@ def make_findings(asset: str, hits: list[dict], source: str = "content-discovery
     other = [h for h in generic if h["status"] not in range(300, 400)
              and h["status"] != 200]
 
-    # (1) redirects: drop canonical self-redirects and bulk wildcard gates;
-    #     report only the FEW remaining distinct destinations.
+    # (1) redirects. On a generic (non-high-value) path a 3xx almost never marks
+    #     a discovered resource — it is the app's routing: a canonical /x -> /x/,
+    #     an auth gate (-> /login), or a catch-all landing page (-> /journals,
+    #     home). Those are ALWAYS noise, however few, so a redirect to one app
+    #     page does not get reported once per host and then aggregate to
+    #     "Redirects to /journals ×35 hosts". Only an OFF-SITE redirect (to a
+    #     different host) is kept, since it can signal an open redirect.
+    asset_hosts = _asset_hosts(asset)
     canonical = [h for h in redirects if _is_canonical_redirect(h)]
     if canonical:
         suppressed["canonical self-redirects (/x -> /x/)"] = len(canonical)
     real = [h for h in redirects if not _is_canonical_redirect(h)]
-    dests: dict = defaultdict(list)
-    for h in real:
-        dests[_dest_of(h)].append(h)
-    for dest, grp in sorted(dests.items(), key=lambda kv: -len(kv[1])):
-        if len(grp) >= wildcard_min:        # wildcard gate (e.g. all -> /login)
-            suppressed[f"redirects to {dest}"] = len(grp)
+    onsite = [h for h in real if not _redirect_offsite(h, asset_hosts)]
+    offsite = [h for h in real if _redirect_offsite(h, asset_hosts)]
+
+    # on-site redirects -> summarised as noise (grouped by destination for the
+    # breakdown), never a finding of their own.
+    on_dests: dict = defaultdict(list)
+    for h in onsite:
+        on_dests[_dest_of(h)].append(h)
+    for dest, grp in on_dests.items():
+        suppressed[f"redirects to {dest}"] = len(grp)
+
+    # off-site redirects -> possible open redirect / external auth hand-off.
+    # A few distinct ones are worth a glance; a flood to one host is still noise.
+    off_dests: dict = defaultdict(list)
+    for h in offsite:
+        off_dests[_redirect_target(h)].append(h)
+    for dest, grp in sorted(off_dests.items(), key=lambda kv: -len(kv[1])):
+        if len(grp) >= wildcard_min:
+            suppressed[f"off-site redirects to {dest}"] = len(grp)
             continue
         findings.append(_grouped_finding(
-            asset, source, f"Redirects to {dest}", "content-redirect",
-            Severity.INFO,
-            f"{len(grp)} discovered path(s) return a redirect (3xx) to {dest} "
-            "(commonly an auth/login gate or canonical redirect).",
-            "A distinct redirect destination worth a glance; bulk/canonical "
-            "redirects were suppressed as noise.",
+            asset, source, f"Off-site redirect to {dest}", "content-open-redirect",
+            Severity.LOW,
+            f"{len(grp)} discovered path(s) redirect off-site to {dest}.",
+            "An off-site redirect can indicate an open redirect or an external "
+            "auth/SSO hand-off; worth a quick check. On-site redirects "
+            "(auth gates, canonical, landing pages) were suppressed as noise.",
             grp))
 
     # (2) deduplicate 200s by response signature; list unique absolute URLs
